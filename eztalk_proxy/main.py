@@ -82,14 +82,25 @@ app.add_middleware(
 logger.info(f"FastAPI EzTalk Proxy v{APP_VERSION} 初始化完成，已配置CORS。")
 
 @app.get("/health", status_code=200, include_in_schema=False, tags=["Utilities"])
-async def health_check(request: Request): # Request 现在应该被正确识别
-    client_from_state = getattr(request.app.state, "http_client", None)
-    client_status = "ok" if client_from_state and not client_from_state.is_closed else "warning"
-    detail_message = f"HTTP client {'initialized and open' if client_status == 'ok' else 'not initialized or closed'}"
-    return {"status": client_status, "detail": detail_message}
+async def health_check(request: Request):
+    logger.info("Health check endpoint called.") # 添加日志
+    try:
+        client_from_state = getattr(request.app.state, "http_client", "NOT_FOUND_IN_STATE") # 更明确的默认值
+        client_is_closed = "UNKNOWN"
+        if hasattr(client_from_state, 'is_closed'):
+            client_is_closed = client_from_state.is_closed
+        
+        logger.info(f"Health check: client_from_state type: {type(client_from_state)}, is_closed: {client_is_closed}")
 
-app.include_router(chat_router.router) # 假设您已移除 prefix
-logger.info("Routers included. Application setup complete.")
+        client_status = "ok" if client_from_state != "NOT_FOUND_IN_STATE" and hasattr(client_from_state, 'is_closed') and not client_from_state.is_closed else "warning"
+        detail_message = f"HTTP client {'initialized and open' if client_status == 'ok' else ('not initialized or closed' if client_from_state == 'NOT_FOUND_IN_STATE' or not hasattr(client_from_state, 'is_closed') else 'closed or uninitialized')}"
+        
+        response_data = {"status": client_status, "detail": detail_message}
+        logger.info(f"Health check response: {response_data}")
+        return response_data
+    except Exception as e:
+        logger.error(f"Error in health check endpoint: {e}", exc_info=True)
+        return {"status": "error_in_health_check", "detail": str(e)} # 仍然返回 200，但内容表明问题
 
 
 if __name__ == "__main__":
