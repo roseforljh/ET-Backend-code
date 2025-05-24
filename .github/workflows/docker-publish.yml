@@ -29,9 +29,6 @@ jobs: # 工作流包含一个或多个 job，这里只有一个名为 build 的 
         context: . # Dockerfile 的路径，. 表示在仓库根目录
         file: ./Dockerfile # 明确指定 Dockerfile 的路径 (如果不在根目录或有特殊名称)
         push: true # 设置为 true 表示推送到仓库
-        tags: | # 给镜像打上的标签，可以有多个
-          ${{ secrets.DOCKERHUB_USERNAME }}/<kunzzz999/app1_backend>:${{ github.sha }} # 使用 commit SHA 作为标签，保证唯一性
-          ${{ secrets.DOCKERHUB_USERNAME }}/<kunzzz999/app1_backend>:latest # 也可以打上 latest 标签
-          # 例如: kunzzz999/app1_backend:${{ github.sha }}
-          #       kunzzz999/app1_backend:latest
-        # 可选: build-args, labels 等参数
+        tags: |
+          ${{ secrets.DOCKERHUB_USERNAME }}/app1_backend:${{ github.sha }}
+          ${{ secrets.DOCKERHUB_USERNAME }}/app1_backend:latest
