@@ -81,6 +81,7 @@ app.add_middleware(
 )
 logger.info(f"FastAPI EzTalk Proxy v{APP_VERSION} 初始化完成，已配置CORS。")
 
+app.include_router(chat_router.router) 
 @app.get("/health", status_code=200, include_in_schema=False, tags=["Utilities"])
 async def health_check(request: Request):
     logger.info("Health check endpoint called.") # 添加日志
