@@ -1,18 +1,15 @@
-
 FROM python:3.9-slim
-
 
 WORKDIR /app
 
+
 COPY requirements.txt .
-
-
-# --no-cache-dir 减少镜像大小
 RUN pip install --no-cache-dir -r requirements.txt
 
 
-COPY . .
+COPY ./eztalk_proxy /app/eztalk_proxy
 
+ENV PORT 7860
 
-EXPOSE 7860
-CMD uvicorn eztalk_proxy.main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD uvicorn eztalk_proxy.main:app --host 0.0.0.0 --port ${PORT}
+CMD uvicorn eztalk_proxy.main:app --host 0.0.0.0 --port ${PORT}
