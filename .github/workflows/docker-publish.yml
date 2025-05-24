@@ -30,5 +30,5 @@ jobs: # 工作流包含一个或多个 job，这里只有一个名为 build 的 
         file: ./Dockerfile # 明确指定 Dockerfile 的路径 (如果不在根目录或有特殊名称)
         push: true # 设置为 true 表示推送到仓库
         tags: |
-             kunzzz999/app1_backend:${{ github.sha }}
-             kunzzz999/app1_backend:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/app1_backend:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/app1_backend:latest
