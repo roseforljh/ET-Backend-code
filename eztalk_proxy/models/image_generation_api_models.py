@@ -32,6 +32,19 @@ class ImageGenerationRequest(BaseModel):
         False, alias="forceDataUri", description="If true, force images to be returned as Data URI."
     )
 
+    # ===== Seedream 4.0 相关便捷字段（与官方文档参数对齐）=====
+    # 直接接受官方 size（支持 '2K'/'4K' 或 'WxH'），优先于 image_size
+    size: Optional[str] = Field(None, description="Preferred image size for Seedream: '2K', '4K', or 'WxH' like '2048x1152'.")
+    # 直接接受顶层 image（字符串或字符串列表），无需通过 contents 提取
+    image: Optional[List[str]] = Field(None, description="Reference image URLs for img2img or multi-image generation.")
+    # 组图/连续生成控制
+    sequential_image_generation: Optional[str] = Field(None, description="auto | on | off | disabled")
+    sequential_image_generation_options: Optional[Dict[str, Any]] = Field(None, description="Options for sequential image generation, e.g., {'max_images': 3}.")
+    # 返回格式与水印/流式开关（与 Seedream 文档一致）
+    response_format: Optional[str] = Field("url", description="url | b64_json")
+    stream: Optional[bool] = Field(False, description="Enable streaming mode (passthrough to upstream).")
+    watermark: Optional[bool] = Field(False, description="Enable watermark in generated images.")
+
 class ImageUrl(BaseModel):
     url: str
 

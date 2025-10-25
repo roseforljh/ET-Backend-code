@@ -26,7 +26,7 @@ class DoubaoSeedreamRequest(BaseModel):
     stream: Optional[bool] = Field(
         False, description="Passthrough upstream SSE/stream if supported"
     )
-    watermark: Optional[bool] = Field(True, description="Enable watermark")
+    watermark: Optional[bool] = Field(False, description="Enable watermark")
 
     # Transport fields
     apiAddress: Optional[str] = Field(

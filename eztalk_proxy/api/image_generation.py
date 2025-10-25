@@ -277,6 +277,54 @@ def _normalize_response(data: Dict[str, Any], append_failure_hint: bool = False)
         elif "image" in data:  # Fallback for single image field
             images_list = _as_image_urls([data["image"]] if data["image"] else [])
 
+    # Case 3.1: Additional provider variants (Kolors/Qwen/common aggregators)
+    if not images_list and isinstance(data, dict):
+        # result.images or result.data (some providers nest under 'result')
+        try:
+            result_obj = data.get("result")
+            if isinstance(result_obj, dict):
+                if not images_list and isinstance(result_obj.get("images"), (list, dict, str)):
+                    images_list = _as_image_urls(result_obj.get("images"))
+                if not images_list and isinstance(result_obj.get("data"), (list, dict, str)):
+                    images_list = _as_image_urls(result_obj.get("data"))
+        except Exception:
+            pass
+        # artifacts with base64 (common in SD/stability-like payloads)
+        try:
+            artifacts = data.get("artifacts")
+            if not images_list and isinstance(artifacts, list):
+                # Map artifacts -> data URI list
+                buf = []
+                for a in artifacts:
+                    if isinstance(a, dict):
+                        b64v = a.get("base64") or a.get("b64_json")
+                        urlv = a.get("url")
+                        if isinstance(urlv, str):
+                            buf.append({"url": urlv})
+                        elif isinstance(b64v, str):
+                            buf.append({"url": f"data:image/png;base64,{b64v}"})
+                if buf:
+                    images_list = buf
+        except Exception:
+            pass
+        # images_url / image_url (non-standard)
+        try:
+            images_url_val = data.get("images_url") or data.get("image_urls")
+            if not images_list and images_url_val is not None:
+                images_list = _as_image_urls(images_url_val)
+            image_url_val = data.get("image_url")
+            if not images_list and image_url_val is not None:
+                images_list = _as_image_urls([image_url_val] if not isinstance(image_url_val, list) else image_url_val)
+        except Exception:
+            pass
+        # nested output list objects like {"output":[{"url":...},{"b64_json":...}]}
+        try:
+            output_val = data.get("output")
+            if not images_list and isinstance(output_val, list):
+                images_list = _as_image_urls(output_val)
+        except Exception:
+            pass
+
     # Consolidate text and check for image generation failure patterns
     final_text = " ".join(text_parts).strip()
     if not images_list and final_text:
@@ -487,26 +535,144 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
             # 默认按 URL 返回，兼容上游
             "response_format": "url",
         }
-        # 尝试将通用 image_size 映射为 size（若提供）
+
+        # 透传 response_format / stream / watermark（如有）
         try:
-            if isinstance(request.image_size, str) and request.image_size.strip():
+            if isinstance(getattr(request, "response_format", None), str) and request.response_format:
+                seedream_payload["response_format"] = request.response_format
+        except Exception:
+            pass
+        try:
+            if isinstance(getattr(request, "stream", None), bool):
+                seedream_payload["stream"] = request.stream
+        except Exception:
+            pass
+        try:
+            if isinstance(getattr(request, "watermark", None), bool):
+                seedream_payload["watermark"] = request.watermark
+        except Exception:
+            pass
+
+        # 透传组图/连续生成控制参数（如有）
+        try:
+            if isinstance(getattr(request, "sequential_image_generation", None), str) and request.sequential_image_generation:
+                seedream_payload["sequential_image_generation"] = request.sequential_image_generation
+        except Exception:
+            pass
+        try:
+            if isinstance(getattr(request, "sequential_image_generation_options", None), dict) and request.sequential_image_generation_options:
+                seedream_payload["sequential_image_generation_options"] = request.sequential_image_generation_options
+        except Exception:
+            pass
+
+        # 优先使用顶层 size；否则将通用 image_size 映射为 size
+        explicit_size = False
+        try:
+            if isinstance(getattr(request, "size", None), str) and request.size.strip():
+                seedream_payload["size"] = request.size.strip()
+                explicit_size = True
+            elif isinstance(request.image_size, str) and request.image_size.strip():
                 seedream_payload["size"] = request.image_size.strip()
         except Exception:
             pass
 
-        # 兼容从 contents 中抽取可能的图片 URL（若上游需要，可扩展）
+        # 若未显式传 size，且 size 缺失或仍为默认 1024x1024，则默认提升到 2K（与官方文档一致，避免低清默认）
+        try:
+            sz_val = seedream_payload.get("size")
+            if not explicit_size and (not isinstance(sz_val, str) or not sz_val.strip() or sz_val.strip().lower() == "1024x1024"):
+                seedream_payload["size"] = "2K"
+                logger.info("[IMG SEEDREAM] Size not explicitly provided; defaulting to 2K for better quality.")
+        except Exception:
+            pass
+
+        # 若提供了宽高比（aspectRatio），将 2K/4K 别名或默认 2K 细化为与比例一致的像素 WxH
+        try:
+            ratio_val = None
+            try:
+                ratio_val = getattr(request, "aspect_ratio", None)
+            except Exception:
+                ratio_val = None
+            if not isinstance(ratio_val, str) or not ratio_val.strip():
+                gc = getattr(request, "generation_config", None)
+                if isinstance(gc, dict):
+                    img_cfg = gc.get("imageConfig") or {}
+                    ar = img_cfg.get("aspectRatio")
+                    if isinstance(ar, str) and ar.strip():
+                        ratio_val = ar.strip()
+
+            def _map_seedream_size(alias_or_wh: str, ratio: str) -> str:
+                if not isinstance(alias_or_wh, str) or not alias_or_wh.strip():
+                    return alias_or_wh
+                s = alias_or_wh.strip().lower()
+                # 如果已经是 WxH 形式，直接返回
+                if "x" in s and all(part.isdigit() for part in s.split("x", 1)):
+                    return alias_or_wh.strip()
+
+                # 标准化比例
+                r = (ratio or "").strip()
+                # 合法的 Seedream 预设表
+                preset_2k = {
+                    "1:1": "2048x2048",
+                    "16:9": "2048x1152",
+                    "9:16": "1152x2048",
+                    "4:3": "2048x1536",
+                    "3:4": "1536x2048",
+                }
+                preset_4k = {
+                    "1:1": "4096x4096",
+                    "16:9": "3840x2160",
+                    "9:16": "2160x3840",
+                    "4:3": "4096x3072",
+                    "3:4": "3072x4096",
+                }
+                if s == "2k":
+                    return preset_2k.get(r, "2048x2048")
+                if s == "4k":
+                    return preset_4k.get(r, "4096x4096")
+                # 未知别名：保持原值
+                return alias_or_wh.strip()
+
+            if isinstance(ratio_val, str) and ratio_val.strip():
+                current_size = seedream_payload.get("size")
+                # 对 2K/4K 或默认的 2K 进行细化
+                mapped = _map_seedream_size(current_size or "2K", ratio_val)
+                if mapped and mapped != current_size:
+                    seedream_payload["size"] = mapped
+                    logger.info(f"[IMG SEEDREAM] Refined size by aspectRatio='{ratio_val}': {current_size} -> {mapped}")
+        except Exception as _e_map:
+            logger.warning(f"[IMG SEEDREAM] Aspect-ratio size refinement skipped due to error: {_e_map}")
+
+        # 收集参考图片：优先读取顶层 image（数组）；并兼容从 contents 中抽取可能的图片 URL
+        img_urls: list[str] = []
+        try:
+            top_images = getattr(request, "image", None)
+            if isinstance(top_images, list):
+                for u in top_images:
+                    if isinstance(u, str) and u:
+                        img_urls.append(u)
+        except Exception:
+            pass
         try:
             if isinstance(request.contents, list) and request.contents:
-                img_urls: list[str] = []
                 for part in request.contents:
-                    # 兼容 openai-like image_url.url / 直接 url 字段
                     if isinstance(part, dict):
                         if isinstance(part.get("image_url"), dict) and isinstance(part["image_url"].get("url"), str):
                             img_urls.append(part["image_url"]["url"])
                         elif isinstance(part.get("url"), str):
                             img_urls.append(part["url"])
-                if img_urls:
-                    seedream_payload["image"] = img_urls
+        except Exception:
+            pass
+        # 去重并写入
+        try:
+            if img_urls:
+                dedup = []
+                seen = set()
+                for u in img_urls:
+                    if u not in seen:
+                        seen.add(u)
+                        dedup.append(u)
+                if dedup:
+                    seedream_payload["image"] = dedup
         except Exception:
             pass
 
@@ -843,7 +1009,11 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
 
     payload = {k: v for k, v in payload.items() if v is not None}
 
-    logger.info(f"[IMG] Proxying to upstream: {url} | model={payload.get('model')} | size={payload.get('image_size')} | batch={payload.get('batch_size')} | steps={payload.get('num_inference_steps')} | guidance={payload.get('guidance_scale')}")
+    try:
+        size_for_log = payload.get("size") if seedream_mode else payload.get("image_size")
+        logger.info(f"[IMG] Proxying to upstream: {url} | model={payload.get('model')} | size={size_for_log} | batch={payload.get('batch_size')} | steps={payload.get('num_inference_steps')} | guidance={payload.get('guidance_scale')}")
+    except Exception:
+        logger.info(f"[IMG] Proxying to upstream: {url} | model={payload.get('model')}")
     logger.debug(f"[IMG] Upstream payload: {payload}")
     if "x-goog-api-key" in headers and "Authorization" in headers:
         logger.info(f"[IMG] Request headers: Authorization & x-goog-api-key present, Content-Type: application/json")
