@@ -9,8 +9,8 @@ class ImageGenerationRequest(BaseModel):
     batch_size: Optional[int] = Field(1, description="The number of images to generate.")
     num_inference_steps: Optional[int] = Field(20, description="The number of denoising steps.")
     guidance_scale: Optional[float] = Field(7.5, description="Higher guidance scale encourages to generate images that are closely linked to the text prompt.")
-    apiAddress: str = Field(..., description="The address of the downstream API service.")
-    apiKey: str = Field(..., description="The API key for the downstream service.")
+    apiAddress: Optional[str] = Field(None, description="The address of the downstream API service.")
+    apiKey: Optional[str] = Field(None, description="The API key for the downstream service.")
     provider: Optional[str] = Field("openai compatible", description="The provider/channel type: 'gemini', 'openai compatible', etc.")
     # 新增：与 Google 文档对齐的生成配置（顶层）
     response_modalities: Optional[List[str]] = Field(

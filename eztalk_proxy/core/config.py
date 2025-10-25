@@ -149,3 +149,16 @@ GCS_PROJECT_ID = os.getenv("GCS_PROJECT_ID", None)
 # Cloudflare bypass strategy for third-party Gemini proxies
 # Options: "full" (all browser headers), "minimal" (basic headers only), "none" (no extra headers)
 CLOUDFLARE_BYPASS_STRATEGY = os.getenv("CLOUDFLARE_BYPASS_STRATEGY", "full").lower()
+
+# ===== Image Generation Presets (Default/SiliconFlow) =====
+# 前端“默认”平台：隐藏参数，后端自动注入；密钥仅从本地环境读取，禁止提交到仓库
+SILICONFLOW_IMAGE_API_URL = os.getenv(
+    "SILICONFLOW_IMAGE_API_URL",
+    "https://api.siliconflow.cn/v1/images/generations"
+)
+SILICONFLOW_DEFAULT_IMAGE_MODEL = os.getenv(
+    "SILICONFLOW_DEFAULT_IMAGE_MODEL",
+    "Kwai-Kolors/Kolors"
+)
+# 支持两种变量名，便于本地配置：SILICONFLOW_API_KEY 或 SILICONFLOW_DEFAULT_API_KEY
+SILICONFLOW_API_KEY_DEFAULT = os.getenv("SILICONFLOW_API_KEY") or os.getenv("SILICONFLOW_DEFAULT_API_KEY")

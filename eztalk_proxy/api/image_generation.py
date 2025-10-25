@@ -12,6 +12,12 @@ from collections import deque
 from typing import Any, Dict, List, Optional
 from pydantic import ValidationError
 from ..services.image_store import save_images, list_images
+# Default image provider (SiliconFlow) presets
+from ..core.config import (
+    SILICONFLOW_IMAGE_API_URL,
+    SILICONFLOW_DEFAULT_IMAGE_MODEL,
+    SILICONFLOW_API_KEY_DEFAULT,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -329,8 +335,13 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
     except Exception:
         pass
 
+    # 有效参数的本地注入占位（可能被“默认平台”覆盖）
+    effective_api_key = request.apiKey
+    effective_url = url
+    effective_model = request.model
+
     headers = {
-        "Authorization": f"Bearer {request.apiKey}",
+        "Authorization": f"Bearer {effective_api_key or ''}",
         "Content-Type": "application/json",
         "User-Agent": "EzTalkProxy/1.9.9",
         "Accept": "application/json"
@@ -338,7 +349,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
     payload = {}
     seedream_mode = False
 
-    model_lower = request.model.lower()
+    model_lower = (effective_model or "").lower()
     is_gemini_image_model = "gemini" in model_lower and ("flash-image" in model_lower or "gemini-pro-vision" in model_lower)
     provider = request.provider or "openai compatible"
     provider_lower = provider.lower()
@@ -382,31 +393,70 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
 
     # 调试信息：显示接收到的完整请求信息
     logger.info(f"[IMG DEBUG] Received ImageGenRequest:")
-    logger.info(f"  - model: {request.model}")
+    logger.info(f"  - model: {effective_model}")
     logger.info(f"  - provider/channel: {request.provider}")
     logger.info(f"  - apiAddress: {request.apiAddress}")
-    logger.info(f"  - apiKey: {request.apiKey[:10]}..." if request.apiKey else "  - apiKey: None")
+    logger.info(f"  - apiKey: {(effective_api_key[:10] + '...') if isinstance(effective_api_key, str) and effective_api_key else 'None'}")
     session_key_for_log = f"{session_key[:8]}..." if session_key else "(none)"
     logger.info(f"[IMG DEBUG] Session key: {session_key_for_log}, client_ip: {client_ip}, conv_id: {conv_id or '(none)'}")
 
     # 根据用户选择的渠道/提供商决定API格式
     # 旧逻辑仅做精确映射，容易被“Gemini 原生渠道/原生/Gemini渠道”等变体漏判，改为鲁棒归一化：
     def _normalize_channel(p: str) -> str:
-        if not isinstance(p, str):
-            return provider_lower
-        pl = p.lower().strip()
-        # 命中 gemini 相关关键词（包含“原生”“google/谷歌”）
-        if any(k in pl for k in ["gemini", "google", "谷歌", "原生"]):
-            return "gemini"
-        # 命中 openai 兼容相关关键词（包含中文“兼容”与 compat）
-        if any(k in pl for k in ["openai", "兼容", "compat"]):
+        """
+        渠道判定规则（严格以“渠道”语义为准，不再依赖平台名称推断）：
+        - 明确为“Gemini”（大小写/中英文均可）→ gemini
+        - 明确为“OpenAI兼容/openai compatible/compat/兼容” → openai_compatible
+        - 其他任意值 → openai_compatible（安全回退）
+        """
+        try:
+            if not isinstance(p, str):
+                return "openai_compatible"
+            pl = p.strip().lower()
+            # 精确优先：等同“gemini”的渠道字符串
+            if pl in ("gemini", "谷歌", "google", "gemini渠道", "gemini原生"):
+                return "gemini"
+            # 广义包含：包含 gemini/google/谷歌/原生 关键字
+            if any(k in pl for k in ("gemini", "google", "谷歌", "原生")):
+                return "gemini"
+            # OpenAI 兼容渠道（中英均可）
+            if pl in ("openai兼容", "openai compatible", "compat", "兼容"):
+                return "openai_compatible"
+            if any(k in pl for k in ("openai", "兼容", "compat")):
+                return "openai_compatible"
+            # 未知渠道统一走 openai 兼容，避免误判
             return "openai_compatible"
-        # 回退：保留小写值
-        return pl
+        except Exception:
+            return "openai_compatible"
 
     normalized_channel = _normalize_channel(provider)
     
     logger.info(f"[IMG DEBUG] Channel mapping - original: {provider} -> normalized: {normalized_channel}")
+
+    # ===== 默认平台（SiliconFlow/Kolors）自动注入（前端不可见）=====
+    # 触发条件：provider 明确为“默认”或“default”等
+    def _is_default_provider(p: Optional[str]) -> bool:
+        if not isinstance(p, str):
+            return False
+        pl = p.strip().lower()
+        return pl in ("默认", "default", "default_image", "siliconflow", "siliconflow_default")
+    if _is_default_provider(provider):
+        # 地址与模型固定，密钥从本地环境注入；严禁将密钥写入仓库
+        if SILICONFLOW_IMAGE_API_URL:
+            effective_url = SILICONFLOW_IMAGE_API_URL
+        if SILICONFLOW_DEFAULT_IMAGE_MODEL:
+            effective_model = SILICONFLOW_DEFAULT_IMAGE_MODEL
+            model_lower = (effective_model or "").lower()
+        if SILICONFLOW_API_KEY_DEFAULT:
+            effective_api_key = SILICONFLOW_API_KEY_DEFAULT
+        url = effective_url
+        headers = {
+            "Authorization": f"Bearer {effective_api_key or ''}",
+            "Content-Type": "application/json",
+            "User-Agent": "EzTalkProxy/1.9.9",
+            "Accept": "application/json"
+        }
+        logger.info(f"[IMG DEFAULT] Using SiliconFlow defaults. url={effective_url}, model={effective_model}")
     
     # ==== Doubao Seedream（即梦4.0）自动适配（OpenAI兼容分支中拦截重写）====
     try:
@@ -466,15 +516,15 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
     # ==== Gemini 渠道强制走原生（与前端/配置一致），不再依赖 host 判断 ====
     if is_gemini_image_model and normalized_channel == "gemini":
         # Use Google's native Gemini API format
-        logger.info(f"[IMG] Using Google native API format for {request.model} (provider: {provider})")
+        logger.info(f"[IMG] Using Google native API format for {effective_model} (provider: {provider})")
         
         # 同时提供 Authorization 与 x-goog-api-key，最大化兼容第三方聚合
         headers = {
-            "Authorization": f"Bearer {request.apiKey}",
+            "Authorization": f"Bearer {effective_api_key or ''}",
             "Content-Type": "application/json",
             "User-Agent": "EzTalkProxy/1.9.9",
             "Accept": "application/json",
-            "x-goog-api-key": request.apiKey
+            "x-goog-api-key": effective_api_key or ""
         }
         
         # ===== Build current user parts and capture user text for history =====
@@ -639,7 +689,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
             payload["generationConfig"] = generation_config
             
         # Construct the correct Google API URL
-        model_name = request.model
+        model_name = effective_model
         # Remove the /v1/images/generations suffix if present and replace with Google's format
         base_url = url
         if base_url.endswith('/v1/images/generations'):
@@ -653,16 +703,62 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
         # 追加 ?key= 以兼容官方与部分聚合实现
         delimiter = '&' if '?' in url else '?'
         if "key=" not in url:
-            url = f"{url}{delimiter}key={request.apiKey}"
+            url = f"{url}{delimiter}key={effective_api_key or ''}"
         # 调试打印最终生成配置，便于核对是否成功带上宽高比
         try:
             logger.info(f"[IMG] Gemini native payload.generationConfig = {payload.get('generationConfig')}")
         except Exception:
             pass
-        
+
+        # 预构建一个“OpenAI兼容”降级payload（用于非官方端点且无图时的兜底重试）
+        compat_payload_for_gemini = None
+        try:
+            content_parts = []
+            if request.contents:
+                # 编辑模式，提取文本与图像
+                text_prompt = ""
+                for part in request.contents:
+                    if "text" in part and part["text"]:
+                        text_prompt = part["text"]
+                        break
+                if text_prompt:
+                    content_parts.append({"type": "text", "text": text_prompt})
+                else:
+                    content_parts.append({"type": "text", "text": "Edit the image."})
+                for part in request.contents:
+                    if "inline_data" in part:
+                        inline_data = part["inline_data"]
+                        mime_type = inline_data.get("mime_type", "image/jpeg")
+                        b64_data = inline_data.get("data", "")
+                        if b64_data:
+                            content_parts.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime_type};base64,{b64_data}"}
+                            })
+            else:
+                content_parts = [{"type": "text", "text": request.prompt or ""}]
+            compat_payload_for_gemini = {
+                "model": effective_model,
+                "messages": [{"role": "user", "content": content_parts}],
+                "stream": False,
+                "modalities": ["image"]
+            }
+            # 透传宽高比
+            try:
+                if getattr(request, "aspect_ratio", None):
+                    compat_payload_for_gemini["aspect_ratio"] = request.aspect_ratio
+                elif isinstance(request.generation_config, dict):
+                    img_cfg = request.generation_config.get("imageConfig") or {}
+                    ar = img_cfg.get("aspectRatio")
+                    if isinstance(ar, str) and ar:
+                        compat_payload_for_gemini["aspect_ratio"] = ar
+            except Exception:
+                pass
+        except Exception:
+            compat_payload_for_gemini = None
     elif is_gemini_image_model:
         # For OpenAI compatible format (even for Gemini models when provider is not "gemini")
-        logger.info(f"[IMG] Using OpenAI-compatible format for Gemini model {request.model} (provider: {provider})")
+        logger.info(f"[IMG] Using OpenAI-compatible format for Gemini model {effective_model} (provider: {provider})")
         if "/images/generations" in url:
             url = url.replace("/images/generations", "/chat/completions")
 
@@ -695,7 +791,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                         })
             
             payload = {
-                "model": request.model,
+                "model": effective_model,
                 "messages": [{"role": "user", "content": content_parts}],
                 "stream": False,
                 "modalities": ["image"]
@@ -715,7 +811,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
             # 使用多模态 parts 格式并显式声明 modalities，以触发中转商的图片输出
             content_parts = [{"type": "text", "text": request.prompt or ""}]
             payload = {
-                "model": request.model,
+                "model": effective_model,
                 "messages": [{"role": "user", "content": content_parts}],
                 "stream": False,
                 "modalities": ["image"]
@@ -733,6 +829,11 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                 pass
     elif not seedream_mode:
         payload = request.model_dump(exclude={"apiAddress", "apiKey", "contents"})
+        # 强制以有效模型为准（支持“默认平台”覆盖）
+        try:
+            payload["model"] = effective_model
+        except Exception:
+            pass
         try:
             img_size = payload.get("image_size")
             if not isinstance(img_size, str) or not img_size.strip() or "<" in img_size:
@@ -747,9 +848,9 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
     if "x-goog-api-key" in headers and "Authorization" in headers:
         logger.info(f"[IMG] Request headers: Authorization & x-goog-api-key present, Content-Type: application/json")
     elif "x-goog-api-key" in headers:
-        logger.info(f"[IMG] Request headers: x-goog-api-key: {request.apiKey[:10]}..., Content-Type: application/json")
+        logger.info(f"[IMG] Request headers: x-goog-api-key: {(effective_api_key[:10] + '...') if isinstance(effective_api_key, str) and effective_api_key else '(none)'} , Content-Type: application/json")
     else:
-        logger.info(f"[IMG] Request headers: Authorization: Bearer {request.apiKey[:10]}..., Content-Type: application/json")
+        logger.info(f"[IMG] Request headers: Authorization: Bearer {(effective_api_key[:10] + '...') if isinstance(effective_api_key, str) and effective_api_key else '(none)'} , Content-Type: application/json")
  
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), http2=True, follow_redirects=True) as client:
@@ -901,22 +1002,22 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                 except Exception:
                     return u
             
-            url_with_key = url if re.search(r'([?&])key=', url) else (f"{url}{'&' if '?' in url else '?'}key={request.apiKey}")
+            url_with_key = url if re.search(r'([?&])key=', url) else (f"{url}{'&' if '?' in url else '?'}key={effective_api_key or ''}")
             url_without_key = remove_key_param(url)
             
             # A) 仅 x-goog-api-key
             a_headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
-            a_headers["x-goog-api-key"] = request.apiKey
+            a_headers["x-goog-api-key"] = effective_api_key or ""
             alt_attempts.append(("A:x-goog-only", url_with_key, a_headers))
             
             # B) 仅 Authorization
             b_headers = {k: v for k, v in headers.items() if k.lower() != "x-goog-api-key"}
-            b_headers["Authorization"] = f"Bearer {request.apiKey}"
+            b_headers["Authorization"] = f"Bearer {effective_api_key or ''}"
             alt_attempts.append(("B:auth-only", url_without_key, b_headers))
             
             # C) x-api-key
             c_headers = {k: v for k, v in headers.items() if k.lower() not in ("x-goog-api-key",)}
-            c_headers["x-api-key"] = request.apiKey
+            c_headers["x-api-key"] = effective_api_key or ""
             alt_attempts.append(("C:x-api-key", url_without_key, c_headers))
             
             try:
