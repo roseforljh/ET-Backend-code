@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  eztalk-proxy:
+    build: .
+    container_name: eztalk-proxy
+    ports:
+      - "0.0.0.0:${PORT:-7860}:7860"
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_CSE_ID=${GOOGLE_CSE_ID}
+      - HOST=0.0.0.0
+      - PORT=7860
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - API_TIMEOUT=${API_TIMEOUT:-600}
+      - READ_TIMEOUT=${READ_TIMEOUT:-60.0}
+      - MAX_CONNECTIONS=${MAX_CONNECTIONS:-200}
+      - SEARCH_RESULT_COUNT=${SEARCH_RESULT_COUNT:-5}
+      - SEARCH_SNIPPET_MAX_LENGTH=${SEARCH_SNIPPET_MAX_LENGTH:-200}
+      - MAX_DOCUMENT_UPLOAD_SIZE_MB=${MAX_DOCUMENT_UPLOAD_SIZE_MB:-20}
+      - GEMINI_ENABLE_GCS_UPLOAD=${GEMINI_ENABLE_GCS_UPLOAD:-false}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - GCS_PROJECT_ID=${GCS_PROJECT_ID}
+    env_file:
+      - .env
+    volumes:
+      - ./temp_uploads:/tmp/temp_document_uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  temp_uploads:
+    driver: local

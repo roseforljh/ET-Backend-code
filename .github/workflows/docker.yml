@@ -1,0 +1,151 @@
+name: Build & Push (Docker Hub)
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: kunzzz999/backdaitalk
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write  # 供 Trivy 上传 SARIF
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # QEMU 仅在多架构时使用，但留着也不碍事
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 只在非 PR 时登录（PR 不推镜像）
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 统一生成 tags & labels
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            # 分支（如 main / develop）
+            type=ref,event=branch
+            # PR 虚拟标签（只构建不推）
+            type=ref,event=pr
+            # 语义化版本（打 v1.2.3）
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # 默认分支推 latest
+            type=raw,value=latest,enable={{is_default_branch}}
+            # 每次提交短 sha
+            type=sha,format=short
+
+      # == 分支/PR：仅构建 amd64，PR 不推 ==
+      - name: Build & Push (branches, amd64)
+        id: build_branch
+        uses: docker/build-push-action@v6
+        if: github.ref_type == 'branch'
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      # == 打 v* 标签：发布多架构 ==
+      - name: Build & Push (release tags, multi-arch)
+        id: build_release
+        uses: docker/build-push-action@v6
+        if: github.ref_type == 'tag'
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      # 输出镜像摘要 & 常用拉取命令到 Job Summary
+      - name: Write summary
+        if: always()
+        run: |
+          DIGEST="${{ steps.build_release.outputs.digest || steps.build_branch.outputs.digest }}"
+          {
+            echo "### Image pushed"
+            echo ""
+            echo "- Repository: \`${{ env.IMAGE_NAME }}\`"
+            echo "- Tags:"
+            printf '%s\n' "${{ steps.meta.outputs.tags }}" | sed 's/^/- /'
+            if [ -n "$DIGEST" ]; then
+              echo "- Digest: \`$DIGEST\`"
+            fi
+            echo ""
+            echo "#### Pull example"
+            FIRST_TAG="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)"
+            echo "\`\`\`bash"
+            echo "docker pull $FIRST_TAG"
+            [ -n "$DIGEST" ] && echo "docker pull ${{ env.IMAGE_NAME }}@${DIGEST}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 生成 SBOM（spdx.json），用 digest 精确定位镜像
+      - name: Generate SBOM (Syft)
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@v0.17.9
+        with:
+          image: ${{ env.IMAGE_NAME }}@${{ steps.build_release.outputs.digest || steps.build_branch.outputs.digest }}
+          artifact-name: sbom-${{ github.run_id }}.spdx.json
+
+  # 漏洞扫描（推送后执行）
+  security-scan:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          # 根据触发类型选择要扫的 tag：
+          # - tag 触发：vX.Y.Z
+          # - 默认分支：latest
+          # - 其他分支：分支名
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.ref_type == 'tag' && github.ref_name || (github.ref_name == github.event.repository.default_branch && 'latest' || github.ref_name) }}
+          format: sarif
+          output: trivy-results.sarif
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Upload SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
