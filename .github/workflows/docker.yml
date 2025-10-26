@@ -120,7 +120,7 @@ jobs:
       # 生成 SBOM（spdx.json），用 digest 精确定位镜像
       - name: Generate SBOM (Syft)
         if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@v0.17.9
+        uses: anchore/sbom-action@latest
         with:
           image: ${{ env.IMAGE_NAME }}@${{ steps.build_release.outputs.digest || steps.build_branch.outputs.digest }}
           artifact-name: sbom-${{ github.run_id }}.spdx.json
