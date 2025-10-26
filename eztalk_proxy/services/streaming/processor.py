@@ -132,17 +132,9 @@ async def process_openai_like_sse_stream(
             if accumulated:
                 logger.info(f"{log_prefix} Stream ending with accumulated content length: {len(accumulated)} chars")
                 try:
-                    fully_fixed = fix_markdown_format(accumulated, aggressive=True)
-                    # 仅当修复产生变化时再发送 final，以避免重复
-                    if fully_fixed and fully_fixed != accumulated:
-                        logger.info(f"[STREAM_DEBUG] {log_prefix} ✅ SENDING content_final (full repaired markdown)")
-                        yield {
-                            "type": "content_final",
-                            "text": fully_fixed,
-                            "output_type": state.get("detected_type", "general"),
-                            "timestamp": get_current_time_iso()
-                        }
+                    # 仅用于诊断：计算最终修复但不下发到客户端，最终修复统一交由前端完成
+                    _ = fix_markdown_format(accumulated, aggressive=True)
                 except Exception as e:
-                    logger.exception(f"{log_prefix} Failed to finalize markdown fix: {e}")
-
+                    logger.exception(f"{log_prefix} Failed to finalize markdown fix (diagnostic only): {e}")
+            
             yield {"type": "finish", "reason": finish_reason, "timestamp": get_current_time_iso()}

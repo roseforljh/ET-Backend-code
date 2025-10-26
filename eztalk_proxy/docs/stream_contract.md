@@ -9,13 +9,14 @@
 - 传输介质：SSE（`text/event-stream`），每个 `data:` 行对应一个 NDJSON 事件对象。
 - 回放介质：NDJSON 文件（每行一个事件 JSON），供本地/CI 复播。
 - 时间戳：可选字段，UTC ISO8601 字符串；用于调试/排序，不参与语义断言。
+- 最终修复策略：服务端不再发送“最终修复”帧，最终 Markdown 修复由客户端在非流式阶段一次性完成（策略A）。服务端仅做轻量清理（换行统一/最小安全修补）。
 
 ## 事件类型与字段
 
 所有事件包含字段：
 - `type: string` 事件类型标识
 
-以下为已对齐 Android 端的稳定子集（与 [AppStreamEvent](KunTalkwithAi/app1/app/src/main/java/com/example/everytalk/data/network/AppStreamEvent.kt) 一致）：
+以下为已对齐 Android 端的稳定子集（与 [AppStreamEvent](EveryTalk/app1/app/src/main/java/com/android/everytalk/data/network/AppStreamEvent.kt:7) 一致）：
 
 1) content
 - 字段：
@@ -25,9 +26,9 @@
   - `timestamp: string | null` 可选
 - 语义：内容中间态，UI可覆盖式更新（按 block_type）
 
-2) content_final
+2) content_final（已废弃，服务端不再下发）
 - 字段同 `content`
-- 语义：内容最终态（尾包修复后），必须在 `finish` 前出现（若有内容）
+- 语义变更：为兼容旧版回放文件而保留文档描述；当前实现采用“前端为唯一最终修复端”，代理不再在流结束时发送该事件。客户端如遇旧回放中的 `content_final`，可按最终覆盖语义处理；实时流中不应期待该事件。
 
 3) reasoning
 - 字段：
@@ -64,9 +65,9 @@
 {"type":"content","text":"Hello","output_type":"general","block_type":"text","timestamp":"2025-01-01T00:00:00Z"}
 {"type":"content","text":"Hello, wor","output_type":"general","block_type":"text","timestamp":"2025-01-01T00:00:01Z"}
 {"type":"content","text":"Hello, world!\n\nThis is a list:\n1. A\n2. B\n","output_type":"general","block_type":"text","timestamp":"2025-01-01T00:00:02Z"}
-{"type":"content_final","text":"Hello, world!\n\nThis is a list:\n1. A\n2. B\n","output_type":"general","block_type":"text","timestamp":"2025-01-01T00:00:03Z"}
 {"type":"finish","reason":"stop"}
 ```
+（说明：实时流不再包含 `content_final`；最终 Markdown 修复由客户端在非流式阶段完成。）
 
 ## 端到端校验流程
 
