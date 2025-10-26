@@ -655,11 +655,28 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
         try:
             if isinstance(request.contents, list) and request.contents:
                 for part in request.contents:
-                    if isinstance(part, dict):
-                        if isinstance(part.get("image_url"), dict) and isinstance(part["image_url"].get("url"), str):
-                            img_urls.append(part["image_url"]["url"])
-                        elif isinstance(part.get("url"), str):
-                            img_urls.append(part["url"])
+                    if not isinstance(part, dict):
+                        continue
+                    # OpenAI 兼容的 {"type":"image_url","image_url":{"url":...}}
+                    if isinstance(part.get("image_url"), dict) and isinstance(part["image_url"].get("url"), str):
+                        img_urls.append(part["image_url"]["url"])
+                        continue
+                    # 直接 {"url": "..."} 的非标准写法
+                    if isinstance(part.get("url"), str):
+                        img_urls.append(part["url"])
+                        continue
+                    # 兼容 Gemini/OpenAI 前端把原图以内联形式传入的情况：{"inline_data":{"mime_type":"image/png","data":"<b64>"}}
+                    try:
+                        inline_obj = part.get("inline_data") or part.get("inlineData")
+                        if isinstance(inline_obj, dict):
+                            b64_data = inline_obj.get("data")
+                            mime = inline_obj.get("mime_type") or inline_obj.get("mimeType") or "image/png"
+                            if isinstance(b64_data, str) and b64_data:
+                                data_uri = f"data:{mime};base64,{b64_data}"
+                                img_urls.append(data_uri)
+                                logger.info(f"[IMG SEEDREAM] Collected inline_data as data URI for Seedream img2img. mime={mime}, len={len(b64_data)}")
+                    except Exception:
+                        pass
         except Exception:
             pass
         # 去重并写入
@@ -673,6 +690,10 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                         dedup.append(u)
                 if dedup:
                     seedream_payload["image"] = dedup
+                    try:
+                        logger.info(f"[IMG SEEDREAM] Using {len(dedup)} reference image(s) for img2img.")
+                    except Exception:
+                        pass
         except Exception:
             pass
 
