@@ -14,6 +14,7 @@ from .core.config import (
 from .api import chat as chat_router
 from .api import image_generation as image_generation_router
 from .api import seedream as seedream_router
+from .api import gemini_live as gemini_live_router
 
 numeric_log_level = getattr(logging, LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
 logging.basicConfig(
@@ -108,6 +109,10 @@ logger.info("图像生成路由已加载到路径 /images/generations")
 # Doubao Seedream 4.0 image generation proxy
 app.include_router(seedream_router.router)
 logger.info("Doubao Seedream 路由已加载到路径 /doubao/v3/images/generations")
+
+# Gemini Live audio relay (server-to-server)
+app.include_router(gemini_live_router.router)
+logger.info("Gemini Live 路由已加载到路径 /gemini/live/*")
 
 
 @app.get("/", status_code=200, include_in_schema=False, tags=["Utilities"])
