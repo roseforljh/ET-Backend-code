@@ -23,9 +23,10 @@ except Exception as e:
     logger.error(f"Failed to import google-genai: {e}")
     _GENAI_AVAILABLE = False
 
-DEFAULT_STT_MODEL = "gemini-2.5-flash"
-DEFAULT_TTS_MODEL = "gemini-2.5-flash-preview-tts"
-DEFAULT_VOICE_NAME = "Kore"  # 可选: Zephyr, Puck, Kore, 等30种
+DEFAULT_STT_MODEL = "gemini-flash-lite-latest"   # 最快的轻量级模型
+DEFAULT_CHAT_MODEL = "gemini-flash-lite-latest"  # 对话也用lite，追求极致速度
+DEFAULT_TTS_MODEL = "gemini-2.5-flash-preview-tts"  # 2.0不存在，用回2.5
+DEFAULT_VOICE_NAME = "Kore"  # 默认音色（实际使用前端传递的值）
 
 
 def wave_file_bytes(pcm_data: bytes, channels: int = 1, rate: int = 24000, sample_width: int = 2) -> bytes:
@@ -48,6 +49,7 @@ async def complete_voice_chat(
     system_prompt: str = Form("", description="系统提示词（可选）"),
     voice_name: str = Form(DEFAULT_VOICE_NAME, description="TTS语音名称（可选）"),
     stt_model: str = Form(DEFAULT_STT_MODEL, description="语音识别模型"),
+    chat_model: str = Form(DEFAULT_CHAT_MODEL, description="对话生成模型"),
     tts_model: str = Form(DEFAULT_TTS_MODEL, description="语音合成模型"),
 ):
     """
@@ -75,7 +77,7 @@ async def complete_voice_chat(
         # ========== 步骤1: STT - 语音识别 ==========
         logger.info(f"Step 1: Speech-to-Text using {stt_model}")
         
-        # 直接使用音频字节数据
+        # 直接使用音频字节数据（简化prompt加快速度）
         stt_response = client.models.generate_content(
             model=stt_model,
             contents=[
@@ -83,7 +85,7 @@ async def complete_voice_chat(
                     data=audio_bytes,
                     mime_type=audio.content_type or "audio/wav"
                 ),
-                "请将这段音频转录为文字。只输出转录的文字内容，不要添加任何其他说明。"
+                "转录："  # 极简prompt，加快处理
             ]
         )
         
@@ -103,30 +105,30 @@ async def complete_voice_chat(
         except:
             history = []
         
-        # 构建完整的对话上下文
-        conversation_parts = []
+        # 构建对话上下文（优化：减少格式化开销）
+        # 只保留最近3轮对话，减少token消耗和处理时间
+        recent_history = history[-6:] if len(history) > 6 else history  # 3轮对话=6条消息
         
-        # 添加系统提示词（如果有）
+        # 直接构建简洁的prompt
+        prompt_parts = []
         if system_prompt:
-            conversation_parts.append(f"系统提示：{system_prompt}\n\n")
+            prompt_parts.append(system_prompt)
         
-        # 添加历史对话
-        if history:
-            conversation_parts.append("对话历史：\n")
-            for msg in history[-10:]:  # 只保留最近10轮对话
-                role = "用户" if msg.get("role") == "user" else "助手"
-                content = msg.get("content", "")
-                conversation_parts.append(f"{role}: {content}\n")
-            conversation_parts.append("\n")
+        for msg in recent_history:
+            prompt_parts.append(msg.get("content", ""))
         
-        # 添加当前用户输入
-        conversation_parts.append(f"用户: {user_text}\n助手: ")
+        prompt_parts.append(user_text)
         
-        full_prompt = "".join(conversation_parts)
+        # 使用换行符连接，减少格式化字符
+        full_prompt = "\n".join(prompt_parts)
         
+        # 限制输出长度，加快TTS处理速度
         chat_response = client.models.generate_content(
-            model=stt_model,
-            contents=full_prompt
+            model=chat_model,
+            contents=full_prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=150  # 限制回复长度，避免TTS处理过慢
+            )
         )
         
         assistant_text = chat_response.text.strip()
@@ -138,29 +140,43 @@ async def complete_voice_chat(
         # ========== 步骤3: TTS - 语音合成 ==========
         logger.info(f"Step 3: Text-to-Speech using {tts_model} with voice {voice_name}")
         
-        tts_response = client.models.generate_content(
-            model=tts_model,
-            contents=f"请用自然的语气说：{assistant_text}",
-            config=types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name=voice_name
+        # 如果回复太长，截断避免TTS超时（保留前200字符）
+        text_for_tts = assistant_text[:200] if len(assistant_text) > 200 else assistant_text
+        if len(assistant_text) > 200:
+            logger.warning(f"AI response too long ({len(assistant_text)} chars), truncated to 200 for TTS")
+        
+        try:
+            # 直接传递文本，不添加额外的prompt（加快TTS速度）
+            tts_response = client.models.generate_content(
+                model=tts_model,
+                contents=text_for_tts,  # 直接传递，不需要"请说："
+                config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name=voice_name
+                            )
                         )
                     )
                 )
             )
-        )
-        
-        # 提取音频数据（24kHz PCM）
-        audio_data = tts_response.candidates[0].content.parts[0].inline_data.data
+            
+            # 提取音频数据（24kHz PCM）
+            audio_data = tts_response.candidates[0].content.parts[0].inline_data.data
+        except Exception as tts_error:
+            # TTS失败时仍返回文字（配额用尽或其他错误）
+            logger.error(f"TTS failed: {tts_error}, returning text-only response")
+            # 返回空音频，客户端只显示文字
+            audio_data = b""  # 空音频
         
         # 转换为WAV格式（更通用）
-        wav_data = wave_file_bytes(audio_data)
-        
-        # 将WAV编码为base64以便在JSON中传输
-        audio_base64 = base64.b64encode(wav_data).decode('utf-8')
+        if audio_data:
+            wav_data = wave_file_bytes(audio_data)
+            audio_base64 = base64.b64encode(wav_data).decode('utf-8')
+        else:
+            # TTS配额用尽，返回空音频标记
+            audio_base64 = ""
         
         # ========== 返回完整结果 ==========
         result = {
@@ -168,7 +184,8 @@ async def complete_voice_chat(
             "assistant_text": assistant_text,
             "audio_base64": audio_base64,
             "audio_format": "wav",
-            "sample_rate": 24000
+            "sample_rate": 24000,
+            "tts_available": bool(audio_base64)  # 标记TTS是否可用
         }
         
         # 使用orjson序列化（更快）
