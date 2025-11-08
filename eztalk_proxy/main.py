@@ -15,6 +15,7 @@ from .api import chat as chat_router
 from .api import image_generation as image_generation_router
 from .api import seedream as seedream_router
 from .api import gemini_live as gemini_live_router
+from .api import gemini_voice_chat as gemini_voice_chat_router
 
 numeric_log_level = getattr(logging, LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
 logging.basicConfig(
@@ -113,6 +114,10 @@ logger.info("Doubao Seedream 路由已加载到路径 /doubao/v3/images/generati
 # Gemini Live audio relay (server-to-server)
 app.include_router(gemini_live_router.router)
 logger.info("Gemini Live 路由已加载到路径 /gemini/live/*")
+
+# Gemini Voice Chat (STT + Chat + TTS)
+app.include_router(gemini_voice_chat_router.router)
+logger.info("Gemini Voice Chat 路由已加载到路径 /gemini/voice-chat/*")
 
 
 @app.get("/", status_code=200, include_in_schema=False, tags=["Utilities"])
