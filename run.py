@@ -39,7 +39,8 @@ def main():
             log_level=log_level,
             access_log=True,
             use_colors=True,
-            loop="asyncio"
+            loop="asyncio",
+            log_config=None  # 使用默认日志配置，不覆盖我们的设置
         )
         
     except KeyboardInterrupt:

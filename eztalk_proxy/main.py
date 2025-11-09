@@ -16,6 +16,7 @@ from .api import image_generation as image_generation_router
 from .api import seedream as seedream_router
 from .api import gemini_live as gemini_live_router
 from .api import gemini_voice_chat as gemini_voice_chat_router
+from .middleware import SignatureVerificationMiddleware
 
 numeric_log_level = getattr(logging, LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
 logging.basicConfig(
@@ -91,6 +92,30 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+# ===== 添加签名验证中间件（必须在CORS之前，在路由注册之前）=====
+# 从环境变量读取配置
+signature_enabled = os.getenv("SIGNATURE_VERIFICATION_ENABLED", "false").lower() == "true"
+signature_keys_str = os.getenv("SIGNATURE_SECRET_KEYS", "your-secret-key-change-in-production-2024")
+signature_keys = [key.strip() for key in signature_keys_str.split(",") if key.strip()]
+
+# 只有当签名验证启用时才添加中间件
+# 注意：中间件的执行顺序是后添加先执行，所以签名验证要在CORS之前添加
+if signature_enabled:
+    app.add_middleware(
+        SignatureVerificationMiddleware,
+        secret_keys=signature_keys,
+        signature_validity_seconds=300,  # 5分钟
+        excluded_paths=["/health", "/docs", "/redoc", "/openapi.json", "/"],
+        enabled=True  # 强制为True，因为我们只在启用时添加
+    )
+    logger.info("签名验证中间件已启用")
+    logger.info(f"排除路径: {['/health', '/docs', '/redoc', '/openapi.json', '/']}")
+    logger.info(f"密钥数量: {len(signature_keys)}")
+    logger.info(f"签名有效期: 300秒")
+else:
+    logger.warning("签名验证中间件已禁用（开发模式）")
+
+# CORS中间件必须在签名验证之后添加（这样CORS会先执行）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -100,6 +125,8 @@ app.add_middleware(
     expose_headers=["*"]
 )
 logger.info(f"FastAPI EzTalk Proxy v{APP_VERSION} 初始化完成，已配置CORS。")
+
+# ===== 注册路由（必须在所有中间件之后）=====
 
 app.include_router(chat_router.router)
 logger.info("聊天路由已加载到路径 /api/v1/chat (或其他在chat_router中定义的路径)")
