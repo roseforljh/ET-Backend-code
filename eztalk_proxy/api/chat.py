@@ -149,6 +149,34 @@ async def chat_proxy_entrypoint(
         chat_input_data = orjson.loads(chat_request_json_str)
         chat_input = ChatRequestModel(**chat_input_data)
         logger.info(f"{log_prefix}: Parsed ChatRequestModel for provider '{chat_input.provider}' and model '{chat_input.model}'.")
+        
+        # 🆕 检测并注入"默认"平台的配置（文本模式）
+        provider_lower = (chat_input.provider or "").lower().strip()
+        is_default_provider = provider_lower in ["默认", "default"]
+        
+        if is_default_provider:
+            from ..core.config import DEFAULT_TEXT_API_URL, DEFAULT_TEXT_API_KEY, DEFAULT_TEXT_MODELS
+            
+            # 验证模型是否在允许的默认模型列表中
+            if chat_input.model not in DEFAULT_TEXT_MODELS:
+                logger.warning(f"{log_prefix}: Model '{chat_input.model}' not in DEFAULT_TEXT_MODELS list, but allowing it for default provider")
+            
+            # 注入后端配置的 API 地址和密钥
+            if not chat_input.api_address or chat_input.api_address.strip() == "":
+                chat_input.api_address = DEFAULT_TEXT_API_URL
+                logger.info(f"{log_prefix}: Injected DEFAULT_TEXT_API_URL for default provider")
+            
+            if not chat_input.api_key or chat_input.api_key.strip() == "":
+                chat_input.api_key = DEFAULT_TEXT_API_KEY
+                logger.info(f"{log_prefix}: Injected DEFAULT_TEXT_API_KEY for default provider")
+            
+            if not chat_input.api_key:
+                logger.error(f"{log_prefix}: No DEFAULT_TEXT_API_KEY configured in environment for default provider")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Default text API key not configured on server. Please contact administrator."
+                )
+        
         try:
             masked = mask_api_key_for_log(getattr(chat_input, "api_key", None))
             logger.info(f"{log_prefix}: API key fingerprint: {masked}; apiAddress='{chat_input.api_address}'")
@@ -158,8 +186,15 @@ async def chat_proxy_entrypoint(
         logger.error(f"{log_prefix}: Failed to parse or validate chat request JSON: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Invalid chat request data: {e}")
 
-    # 使用新版分发：channel 优先（实现“文本模式 Gemini 可走聚合商链路”）
-    channel, reason = decide_chat_channel_v2(chat_input)
+    # 🆕 默认平台强制使用 OpenAI 兼容处理器（因为默认API是聚合商，不是Google官方）
+    if is_default_provider:
+        channel = "openai"
+        reason = "default_provider"
+        logger.info(f"{log_prefix}: Forcing OpenAI-compatible channel for default provider")
+    else:
+        # 使用新版分发：channel 优先（实现"文本模式 Gemini 可走聚合商链路"）
+        channel, reason = decide_chat_channel_v2(chat_input)
+    
     logger.info(f"{log_prefix}: Channel decided (v2) => {channel} (reason={reason}); "
                 f"provider='{chat_input.provider}', model='{chat_input.model}', api='{chat_input.api_address}', channel_field='{getattr(chat_input, 'channel', None)}'.")
 
