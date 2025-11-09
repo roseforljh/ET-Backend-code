@@ -29,7 +29,9 @@ from ..models.api_models import (
 from ..core.config import (
     TEMP_UPLOAD_DIR,
     API_TIMEOUT,
-    GEMINI_SUPPORTED_UPLOAD_MIMETYPES
+    GEMINI_SUPPORTED_UPLOAD_MIMETYPES,
+    DEFAULT_TEXT_API_URL,
+    DEFAULT_TEXT_API_KEY
 )
 from ..utils.helpers import (
     orjson_dumps_bytes_wrapper,
@@ -166,6 +168,29 @@ async def handle_openai_compatible_request(
     request_id: str,
 ):
     log_prefix = f"RID-{request_id}"
+    
+    # ===== 默认文本配置自动注入（前端不可见）=====
+    # 触发条件：provider 明确为"默认"或"default"等，或者 API key 为空
+    def _is_default_text_provider(p: str) -> bool:
+        if not isinstance(p, str):
+            return False
+        pl = p.strip().lower()
+        return pl in ("默认", "default", "default_text")
+    
+    # 检查是否需要使用默认配置：provider为"默认" 或 API key为空
+    should_use_default = (
+        _is_default_text_provider(chat_input.provider or "") or
+        not chat_input.api_key or
+        (isinstance(chat_input.api_key, str) and not chat_input.api_key.strip())
+    )
+    
+    if should_use_default:
+        # 地址与密钥从本地环境注入；严禁将密钥写入仓库
+        if DEFAULT_TEXT_API_URL:
+            chat_input.api_address = DEFAULT_TEXT_API_URL
+        if DEFAULT_TEXT_API_KEY:
+            chat_input.api_key = DEFAULT_TEXT_API_KEY
+        logger.info(f"{log_prefix}: [CHAT DEFAULT] Using default text API. url={chat_input.api_address}, key_provided={bool(DEFAULT_TEXT_API_KEY)}")
     
     # Read all file contents into memory immediately, as the file stream can be closed.
     multimodal_parts_in_memory = []
