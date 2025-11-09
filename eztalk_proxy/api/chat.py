@@ -1,15 +1,17 @@
 import logging
+import time
 import uuid
 from typing import List, Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Request, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import httpx
 import orjson
 
 from ..models.api_models import ChatRequestModel
 from ..core.config import MAX_DOCUMENT_UPLOAD_SIZE_MB
+from ..services.rate_limiter import get_rate_limiter
 from . import gemini, openai
 
 logger = logging.getLogger("EzTalkProxy.Routers.Chat")
@@ -149,6 +151,43 @@ async def chat_proxy_entrypoint(
         chat_input_data = orjson.loads(chat_request_json_str)
         chat_input = ChatRequestModel(**chat_input_data)
         logger.info(f"{log_prefix}: Parsed ChatRequestModel for provider '{chat_input.provider}' and model '{chat_input.model}'.")
+        
+        # 🆕 提取设备ID（用于速率限制）
+        device_id = getattr(chat_input, "device_id", None) or fastapi_request_obj.headers.get("X-Device-ID", "unknown")
+        
+        # 🆕 检查速率限制（仅对特定模型）
+        rate_limiter = get_rate_limiter()
+        is_allowed, remaining, reset_time = rate_limiter.check_and_record(device_id, chat_input.model)
+        
+        if not is_allowed:
+            from datetime import datetime
+            reset_datetime = datetime.fromtimestamp(reset_time).strftime('%Y-%m-%d %H:%M:%S')
+            error_message = (
+                f"模型 {chat_input.model} 的使用次数已达到限制（50次/24小时）。\n"
+                f"配额将在 {reset_datetime} 重置。\n"
+                f"您可以使用其他默认模型（gemini-2.5-flash 或 gemini-flash-lite-latest）继续对话。"
+            )
+            logger.warning(f"{log_prefix}: Rate limit exceeded for device={device_id[:8]}..., model={chat_input.model}")
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": {
+                        "message": error_message,
+                        "type": "rate_limit_exceeded",
+                        "code": "rate_limit_exceeded",
+                        "remaining": remaining,
+                        "reset_time": reset_time
+                    }
+                },
+                headers={
+                    "X-RateLimit-Limit": "50",
+                    "X-RateLimit-Remaining": str(remaining),
+                    "X-RateLimit-Reset": str(reset_time),
+                    "Retry-After": str(max(0, reset_time - int(time.time())))
+                }
+            )
+        
+        logger.info(f"{log_prefix}: Rate limit check passed. Remaining quota: {remaining}")
         
         # 🆕 检测并注入"默认"平台的配置（文本模式）
         provider_lower = (chat_input.provider or "").lower().strip()
