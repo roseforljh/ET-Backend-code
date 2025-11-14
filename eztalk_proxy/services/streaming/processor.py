@@ -5,7 +5,7 @@ from  typing  import  Dict,  Any,  AsyncGenerator
 from  ...models.api_models  import  AppStreamEventPy
 from  ...utils.helpers  import  get_current_time_iso
 from  .flush  import  MarkdownBlockDetector  as  _FlushDetector
-from  .format_fixer  import  fix_markdown_format
+# format_fixer removed per requirement
 
 logger  =  logging.getLogger("EzTalkProxy.StreamProcessors")
 
@@ -92,8 +92,8 @@ async def process_openai_like_sse_stream(
 
         # 仅对正文进行清理与累积，用于类型检测与刷新判定
         if _is_meaningful(content_chunk):
-            # 🎯 Markdown format fix (safe, backend)
-            cleaned_for_accumulation = fix_markdown_format(str(content_chunk), aggressive=False)
+            # 🎯 停用后端预处理：直接透传原始增量
+            cleaned_for_accumulation = str(content_chunk)
             if _is_meaningful(cleaned_for_accumulation):
                 state["accumulated_content"] += cleaned_for_accumulation
 
@@ -127,14 +127,9 @@ async def process_openai_like_sse_stream(
                 yield {"type": "reasoning_finish", "timestamp": get_current_time_iso()}
                 state["reasoning_finish_event_sent"] = True
 
-            # 结束时发送一次全量修复后的内容，解决表格分隔线被拆分导致无法渲染的问题
+            # 停用诊断性最终修复：仅记录长度信息，直接结束
             accumulated = state.get("accumulated_content", "")
             if accumulated:
                 logger.info(f"{log_prefix} Stream ending with accumulated content length: {len(accumulated)} chars")
-                try:
-                    # 仅用于诊断：计算最终修复但不下发到客户端，最终修复统一交由前端完成
-                    _ = fix_markdown_format(accumulated, aggressive=True)
-                except Exception as e:
-                    logger.exception(f"{log_prefix} Failed to finalize markdown fix (diagnostic only): {e}")
             
             yield {"type": "finish", "reason": finish_reason, "timestamp": get_current_time_iso()}

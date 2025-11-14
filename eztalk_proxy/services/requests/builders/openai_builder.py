@@ -16,11 +16,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from ....utils.helpers import is_gemini_2_5_model  # not used here but kept for parity
 from ....core.config import DEFAULT_OPENAI_API_BASE_URL
 from ....models.api_models import ChatRequestModel
-from ..prompt_composer import (
-    compose_system_prompt,
-    detect_user_language_from_text,
-    extract_user_texts_from_openai_messages,
-)
 
 logger = logging.getLogger("EzTalkProxy.Services.Requests.OpenAIBuilder")
 
@@ -34,25 +29,9 @@ def is_gemini_model_in_openai_format(model_name: str) -> bool:
 
 def add_system_prompt_if_needed(messages: List[Dict[str, Any]], request_id: str) -> List[Dict[str, Any]]:
     """
-    add_system_prompt_if_needed(messages: List[dict], request_id: str) -> List[dict]
-    Inject the unified render-safe V3 system prompt (English body) based on user intent/language.
-    Only inject when there is no existing system message.
+    No-op: do not inject any system prompt automatically.
+    Keep user's messages unmodified.
     """
-    log_prefix = f"RID-{request_id}"
-    has_system_message = any((msg.get("role") or "").lower() == "system" for msg in messages)
-
-    if not has_system_message:
-        user_text = extract_user_texts_from_openai_messages(messages)
-        user_lang = detect_user_language_from_text(user_text)
-        system_text = compose_system_prompt(False, user_lang)
-        system_message = {"role": "system", "content": system_text}
-        messages.insert(0, system_message)
-        logger.info(
-            f"{log_prefix}: Injected V3 system prompt (lang={user_lang})"
-        )
-    else:
-        logger.info(f"{log_prefix}: System message already exists, skip injection")
-
     return messages
 
 

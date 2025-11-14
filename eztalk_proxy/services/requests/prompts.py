@@ -1,50 +1,56 @@
 # -*- coding: utf-8 -*-
 """
-Prompt composer: returns the unified system prompt.
+Unified prompts module (consolidated).
 
-This isolates long prompt text from request builders and centralizes prompt logic.
+Single source of truth for all prompt-related helpers.
+Currently implemented as no-ops to avoid implicit system prompt injection.
 """
 
 from __future__ import annotations
 
-from typing import List
+from typing import Any, Dict, List
 
-from .prompt_templates import RENDER_SAFE_V3_PROMPT_EN
+
+# Backward-compat constant (kept but empty by design)
+RENDER_SAFE_V3_PROMPT_EN: str = ""
 
 
 def compose_system_prompt(is_math: bool, user_language: str) -> str:
     """
     compose_system_prompt(is_math: bool, user_language: str) -> str
-    Returns the system prompt with a language note.
-
-    Notes:
-    - is_math parameter is kept for compatibility but not used
-    - Returns the same prompt for all scenarios
+    NO-OP: returns empty string to avoid implicit system prompt injection.
     """
-    language_note = (
-        "Language: Respond in zh-CN by default; if the user explicitly requests another language, respond in that language. "
-        "Mirror the chosen language in all TEXT, headings, and tables. "
-        "Keep CODE fence language tags (```python, ```ts, ```sh, etc.) in English.\n\n"
-    )
-    return language_note + RENDER_SAFE_V3_PROMPT_EN
+    return ""
+
+
+def add_system_prompt_if_needed(messages: List[Dict[str, Any]], request_id: str) -> List[Dict[str, Any]]:
+    """
+    Identity: return messages as-is (do not inject system prompt).
+    """
+    return messages
+
+
+def add_system_prompt_to_gemini_messages(messages: List[Any], request_id: str) -> List[Any]:
+    """
+    Identity: return messages as-is (do not inject system prompt).
+    """
+    return messages
 
 
 def detect_math_intent(text: str) -> bool:
     """
-    detect_math_intent(text: str) -> bool
-    Simplified: always returns False (math detection disabled).
+    Always returns False (disabled).
     """
     return False
 
 
 def detect_user_language_from_text(text: str) -> str:
     """
-    detect_user_language_from_text(text: str) -> str
-    Very lightweight language detection; returns a BCP-47-like tag.
+    Lightweight language detection; returns a BCP-47-like tag.
+    (Kept for compatibility; does not trigger any injection.)
     """
     if not text:
         return "en"
-
     for ch in text:
         cp = ord(ch)
         if 0x4E00 <= cp <= 0x9FFF:  # CJK Unified Ideographs
@@ -59,14 +65,13 @@ def detect_user_language_from_text(text: str) -> str:
             return "ar"
         if 0x0900 <= cp <= 0x097F:  # Devanagari
             return "hi-IN"
-
     return "en"
 
 
 def extract_user_texts_from_openai_messages(messages: List[dict]) -> str:
     """
-    extract_user_texts_from_openai_messages(messages: List[dict]) -> str
     Collects user text from OpenAI-style message arrays (including array content parts).
+    Compatibility shim; trimmed to 4000 chars.
     """
     texts: List[str] = []
     for msg in messages or []:
@@ -86,9 +91,8 @@ def extract_user_texts_from_openai_messages(messages: List[dict]) -> str:
 
 def extract_user_texts_from_parts_messages(messages: List[object]) -> str:
     """
-    extract_user_texts_from_parts_messages(messages: List[PartsApiMessagePy]) -> str
     Collects user text from PartsApiMessagePy-style messages (text parts only).
-    Uses duck typing to avoid hard import cycles.
+    Compatibility shim; trimmed to 4000 chars.
     """
     texts: List[str] = []
     for m in messages or []:

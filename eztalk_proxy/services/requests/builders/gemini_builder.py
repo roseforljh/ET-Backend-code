@@ -23,13 +23,21 @@ from ....models.api_models import (
     PyInputAudioContentPart,
 )
 from ....utils.helpers import is_gemini_2_5_model
-from ..prompt_composer import (
-    compose_system_prompt,
-    detect_user_language_from_text,
-    extract_user_texts_from_parts_messages,
-)
 
 logger = logging.getLogger("EzTalkProxy.Services.Requests.GeminiBuilder")
+
+# Local lightweight helpers (inlined to remove prompt_* dependencies)
+def _extract_user_texts_from_parts_messages(messages: List[PartsApiMessagePy]) -> str:
+    texts: List[str] = []
+    for m in messages or []:
+        try:
+            if (getattr(m, "role", "") or "").lower() == "user":
+                for p in getattr(m, "parts", []) or []:
+                    if getattr(p, "type", None) in (None, "text_content") and hasattr(p, "text"):
+                        texts.append(getattr(p, "text", "") or "")
+        except Exception:
+            continue
+    return "\n".join(texts)[:4000]
 
 
 def should_enable_code_execution(chat_input: ChatRequestModel, request_id: str) -> bool:
@@ -57,7 +65,7 @@ def should_enable_code_execution(chat_input: ChatRequestModel, request_id: str) 
         return False
     
     # 检测用户意图关键词
-    user_texts = extract_user_texts_from_parts_messages(chat_input.messages)
+    user_texts = _extract_user_texts_from_parts_messages(chat_input.messages)
     intent_keywords = [
         "计算", "求解", "运行代码", "执行代码", "画图", "绘制", "plot",
         "matplotlib", "数据分析", "统计", "csv", "pandas", "numpy",
@@ -148,29 +156,8 @@ def convert_parts_messages_to_rest_api_contents(
 
 def add_system_prompt_to_gemini_messages(messages: List[PartsApiMessagePy], request_id: str) -> List[PartsApiMessagePy]:
     """
-    add_system_prompt_to_gemini_messages(messages, request_id) -> List[PartsApiMessagePy]
-    Inject the unified render-safe V3 system prompt (English body) as a 'system' PartsApiMessagePy
-    when no system message exists.
+    No-op: do not auto-inject any system prompt. Keep user's messages unmodified.
     """
-    log_prefix = f"RID-{request_id}"
-
-    has_system_message = any((getattr(m, "role", "") or "").lower() == "system" for m in messages)
-
-    if not has_system_message:
-        user_text = extract_user_texts_from_parts_messages(messages)
-        user_lang = detect_user_language_from_text(user_text)
-        system_text = compose_system_prompt(False, user_lang)
-        system_text_part = PyTextContentPart(type="text_content", text=system_text)
-        system_message = PartsApiMessagePy(
-            role="system",
-            message_type="parts_message",
-            parts=[system_text_part]
-        )
-        messages.insert(0, system_message)
-        logger.info(f"{log_prefix}: Injected V3 system prompt for Gemini (lang={user_lang})")
-    else:
-        logger.info(f"{log_prefix}: System message exists for Gemini, skip injection")
-
     return messages
 
 
