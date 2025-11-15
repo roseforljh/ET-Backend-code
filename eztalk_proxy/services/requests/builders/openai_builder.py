@@ -13,6 +13,14 @@ import copy
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+# System prompt composition and helpers
+from ..prompts import (
+    detect_user_language_from_text,
+    extract_user_texts_from_openai_messages,
+    detect_math_intent,
+    compose_system_prompt,
+)
+
 from ....utils.helpers import is_gemini_2_5_model  # not used here but kept for parity
 from ....core.config import DEFAULT_OPENAI_API_BASE_URL
 from ....models.api_models import ChatRequestModel
@@ -63,8 +71,21 @@ def prepare_openai_request(
         headers["x-goog-api-key"] = request_data.api_key
 
     final_messages = add_system_prompt_if_needed(copy.deepcopy(processed_messages), request_id)
+
+    # Auto-inject compliant system prompt only when user didn't provide one and none exists
+    has_user_system_message = any((m.get("role") or "").lower() == "system" for m in processed_messages or [])
     if system_prompt:
         final_messages.insert(0, {"role": "system", "content": system_prompt})
+    elif not has_user_system_message:
+        try:
+            user_texts = extract_user_texts_from_openai_messages(processed_messages or [])
+            user_lang = detect_user_language_from_text(user_texts)
+            is_math = detect_math_intent(user_texts)
+            auto_system = compose_system_prompt(is_math=is_math, user_language=user_lang)
+            if auto_system:
+                final_messages.insert(0, {"role": "system", "content": auto_system})
+        except Exception as _e:
+            logger.warning(f"RID-{request_id}: Failed to compose auto system prompt: {_e}")
 
     payload: Dict[str, Any] = {
         "model": request_data.model,

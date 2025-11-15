@@ -12,6 +12,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+# System prompt helpers
+from ..prompts import (
+    detect_user_language_from_text,
+    detect_math_intent,
+    compose_system_prompt,
+)
+
 from ....core.config import GOOGLE_API_BASE_URL, CLOUDFLARE_BYPASS_STRATEGY
 from ....models.api_models import (
     ChatRequestModel,
@@ -295,6 +302,18 @@ def prepare_gemini_rest_api_request(
         if sys_text.strip():
             json_payload["systemInstruction"] = {"parts": [{"text": sys_text}]}
             logger.info(f"{log_prefix}: Moved {len(extracted_system_texts)} system message(s) into systemInstruction.")
+    elif not extracted_system_texts and not system_prompt:
+        # Auto-inject compliant system prompt for Markdown safety
+        try:
+            user_texts_for_lang = _extract_user_texts_from_parts_messages(messages_to_convert_or_use)
+            user_lang = detect_user_language_from_text(user_texts_for_lang)
+            is_math = detect_math_intent(user_texts_for_lang)
+            auto_system = compose_system_prompt(is_math=is_math, user_language=user_lang)
+            if auto_system:
+                json_payload["systemInstruction"] = {"parts": [{"text": auto_system}]}
+                logger.info(f"{log_prefix}: Auto-injected compliant systemInstruction (lang={user_lang}, math={is_math}).")
+        except Exception as _e:
+            logger.warning(f"{log_prefix}: Failed to compose auto system instruction: {_e}")
     
     # Contents
     if not remaining_messages:
