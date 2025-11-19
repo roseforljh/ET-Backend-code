@@ -1,11 +1,15 @@
 import time
 import logging
+from datetime import datetime, timedelta, timezone
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import Request
 from ..core.database import async_session_maker
 from ..models.db_models import AccessLog
 
 logger = logging.getLogger("EzTalkProxy.AccessLog")
+
+# 北京时区
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 class AccessLogMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -24,8 +28,19 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         if request.url.path not in ["/health", "/favicon.ico"] and not request.url.path.startswith("/static"):
              try:
                 async with async_session_maker() as session:
+                    # 获取真实 IP (处理代理情况)
+                    forwarded = request.headers.get("X-Forwarded-For")
+                    if forwarded:
+                        real_ip = forwarded.split(",")[0].strip()
+                    else:
+                        real_ip = request.client.host
+
+                    # 使用北京时间
+                    current_time_bj = datetime.now(BEIJING_TZ).replace(tzinfo=None) # 移除时区信息以便存入 SQLite
+
                     access_log = AccessLog(
-                        ip_address=request.client.host,
+                        timestamp=current_time_bj,
+                        ip_address=real_ip,
                         path=request.url.path,
                         method=request.method,
                         status_code=response.status_code,

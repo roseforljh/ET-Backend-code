@@ -2,7 +2,7 @@ import os
 import psutil
 import time
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Response, status, HTTPException, Request, Body
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -108,9 +108,12 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     uptime_seconds = time.time() - START_TIME
     uptime_string = str(timedelta(seconds=int(uptime_seconds)))
     
-    # 获取今日访问量
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    result = await db.execute(select(func.count()).select_from(AccessLog).where(AccessLog.timestamp >= today_start))
+    # 获取今日访问量 (北京时间)
+    beijing_tz = timezone(timedelta(hours=8))
+    now_bj = datetime.now(beijing_tz)
+    today_start_bj = now_bj.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+    
+    result = await db.execute(select(func.count()).select_from(AccessLog).where(AccessLog.timestamp >= today_start_bj))
     today_visits = result.scalar()
 
     return {
@@ -130,12 +133,14 @@ async def get_stats_trend(period: str = "day", db: AsyncSession = Depends(get_db
     获取访问趋势数据
     period: day (按小时), month (按天), year (按月)
     """
-    now = datetime.utcnow()
+    # 使用北京时间计算
+    beijing_tz = timezone(timedelta(hours=8))
+    now = datetime.now(beijing_tz).replace(tzinfo=None)
     
     if period == "day":
         start_time = now - timedelta(hours=24)
         # SQLite 的 strftime 格式
-        group_format = "%Y-%m-%d %H:00" 
+        group_format = "%Y-%m-%d %H:00"
         interval = timedelta(hours=1)
     elif period == "month":
         start_time = now - timedelta(days=30)
