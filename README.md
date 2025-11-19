@@ -5,7 +5,7 @@ colorFrom: blue
 colorTo: green
 sdk: docker
 pinned: false
-license: apache-2.0
+license: mit
 app_port: 7860
 # 关键：添加以下两行以确保网络访问和密钥可用
 network: true
@@ -134,4 +134,4 @@ docker-compose up -d
 
 ## 📝 License
 
-Apache-2.0
+MIT
