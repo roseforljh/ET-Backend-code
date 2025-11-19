@@ -86,7 +86,7 @@ async def login(request: LoginRequest, response: Response, db: AsyncSession = De
 @router.post("/password", dependencies=[Depends(verify_admin)])
 async def change_password(request: PasswordChangeRequest, db: AsyncSession = Depends(get_db)):
     """
-    修改管理员密码
+    修改管理员密码，并同步更新 .env 文件
     """
     user = await get_admin_user(db)
     if not user:
@@ -95,8 +95,47 @@ async def change_password(request: PasswordChangeRequest, db: AsyncSession = Dep
     if user.hashed_password != hash_password(request.old_password):
          raise HTTPException(status_code=400, detail="旧密码错误")
          
+    # 1. 更新数据库
     user.hashed_password = hash_password(request.new_password)
     await db.commit()
+
+    # 2. 同步更新 .env 文件中的 ADMIN_PASSWORD
+    # 这样即使数据库丢失（如未挂载卷的 Docker 重启），下次初始化也能使用新密码
+    try:
+        env_path = ".env"
+        lines = []
+        key = "ADMIN_PASSWORD"
+        value = request.new_password
+        key_found = False
+        
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith(f"{key}="):
+                new_lines.append(f"{key}={value}\n")
+                key_found = True
+            else:
+                new_lines.append(line)
+                
+        if not key_found:
+            # 如果文件末尾没有换行符，先加一个
+            if new_lines and not new_lines[-1].endswith('\n'):
+                new_lines[-1] += '\n'
+            new_lines.append(f"{key}={value}\n")
+            
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+            
+        # 更新当前进程环境变量
+        os.environ[key] = value
+        
+    except Exception as e:
+        # 记录错误但不中断请求，因为数据库已经更新成功了
+        print(f"Warning: Failed to update .env file: {e}")
+
     return {"message": "密码修改成功"}
 
 @router.get("/stats", dependencies=[Depends(verify_admin)])
