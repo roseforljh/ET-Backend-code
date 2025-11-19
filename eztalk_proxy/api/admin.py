@@ -43,13 +43,18 @@ async def init_admin_user(db: AsyncSession):
     """确保存在 admin 用户"""
     user = await get_admin_user(db)
     if not user:
-        # 使用环境变量中的密码初始化
+        # 使用环境变量中的密码初始化，如果环境变量也没有，则使用默认值 'admin'
+        password_to_use = ENV_ADMIN_PASSWORD if ENV_ADMIN_PASSWORD else "admin"
+        
         new_user = AdminUser(
             username="admin",
-            hashed_password=hash_password(ENV_ADMIN_PASSWORD)
+            hashed_password=hash_password(password_to_use)
         )
         db.add(new_user)
         await db.commit()
+    # 注意：如果用户已存在（数据库中有记录），我们不更新密码
+    # 这意味着 .env 中的 ADMIN_PASSWORD 仅在首次初始化时生效
+    # 后续修改密码应通过管理后台进行
 
 @router.post("/login")
 async def login(request: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
