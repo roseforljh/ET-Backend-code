@@ -6,9 +6,11 @@ from fastapi.security import APIKeyCookie
 # 从环境变量获取管理员密码，默认为 'admin'
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
 COOKIE_NAME = "admin_session"
-# 生成一个随机的会话密钥，每次重启都会变化，这意味重启后需要重新登录
-# 在生产环境中，应该将其持久化或使用 JWT
-SESSION_SECRET = secrets.token_hex(32)
+# 生成会话密钥：优先从环境变量读取，否则随机生成
+# 随机生成意味着每次重启后需要重新登录
+# 如果环境变量 ADMIN_SESSION_SECRET 的值为 '71'，则强制使用随机生成的密钥
+_env_secret = os.getenv("ADMIN_SESSION_SECRET")
+SESSION_SECRET = secrets.token_hex(32) if not _env_secret or _env_secret == "71" else _env_secret
 
 cookie_scheme = APIKeyCookie(name=COOKIE_NAME, auto_error=False)
 
