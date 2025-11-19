@@ -2,6 +2,7 @@ import os
 import logging
 import httpx
 from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -16,14 +17,29 @@ from .api import image_generation as image_generation_router
 from .api import seedream as seedream_router
 from .api import gemini_live as gemini_live_router
 from .api import gemini_voice_chat as gemini_voice_chat_router
+from .api import admin as admin_router
 from .middleware import SignatureVerificationMiddleware
+from .middleware.access_logging import AccessLogMiddleware
+from .core.logging_utils import memory_log_handler
+from .core.database import init_db
 
 numeric_log_level = getattr(logging, LOG_LEVEL_FROM_ENV.upper(), logging.INFO)
-logging.basicConfig(
-    level=numeric_log_level,
-    format='%(asctime)s %(levelname)-8s [%(name)s:%(module)s:%(lineno)d] - %(message)s',
+
+# 配置根日志记录器
+root_logger = logging.getLogger()
+root_logger.setLevel(numeric_log_level)
+
+# 1. 控制台处理器
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter(
+    '%(asctime)s %(levelname)-8s [%(name)s:%(module)s:%(lineno)d] - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
-)
+))
+root_logger.addHandler(console_handler)
+
+# 2. 内存处理器 (用于管理后台)
+root_logger.addHandler(memory_log_handler)
+
 logger = logging.getLogger("EzTalkProxy.Main")
 
 if hasattr(logging.getLogger("EzTalkProxy"), 'SPHASANN'):
@@ -37,6 +53,14 @@ logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     logger.info("Lifespan: 应用启动，开始初始化...")
+    
+    # 初始化数据库
+    try:
+        await init_db()
+        logger.info("Lifespan: 数据库初始化成功")
+    except Exception as e:
+        logger.error(f"Lifespan: 数据库初始化失败: {e}", exc_info=True)
+
     client_local: Optional[httpx.AsyncClient] = None
     try:
         client_local = httpx.AsyncClient(
@@ -105,15 +129,18 @@ if signature_enabled:
         SignatureVerificationMiddleware,
         secret_keys=signature_keys,
         signature_validity_seconds=300,  # 5分钟
-        excluded_paths=["/health", "/docs", "/redoc", "/openapi.json", "/"],
+        excluded_paths=["/health", "/docs", "/redoc", "/openapi.json", "/", "/everytalk", "/favicon.ico"],
         enabled=True  # 强制为True，因为我们只在启用时添加
     )
     logger.info("签名验证中间件已启用")
-    logger.info(f"排除路径: {['/health', '/docs', '/redoc', '/openapi.json', '/']}")
+    logger.info(f"排除路径: {['/health', '/docs', '/redoc', '/openapi.json', '/', '/everytalk', '/favicon.ico']}")
     logger.info(f"密钥数量: {len(signature_keys)}")
     logger.info(f"签名有效期: 300秒")
 else:
     logger.warning("签名验证中间件已禁用（开发模式）")
+
+# 访问日志中间件
+app.add_middleware(AccessLogMiddleware)
 
 # CORS中间件必须在签名验证之后添加（这样CORS会先执行）
 app.add_middleware(
@@ -146,6 +173,22 @@ logger.info("Gemini Live 路由已加载到路径 /gemini/live/*")
 app.include_router(gemini_voice_chat_router.router)
 logger.info("Gemini Voice Chat 路由已加载到路径 /gemini/voice-chat/*")
 
+# Admin Router
+app.include_router(admin_router.router, prefix="/everytalk/api", tags=["Admin"])
+logger.info("管理后台 API 已加载到路径 /everytalk/api")
+
+@app.get("/everytalk", response_class=HTMLResponse, include_in_schema=False)
+async def admin_page():
+    """管理后台页面"""
+    # 假设模板文件在 eztalk_proxy/templates/admin.html
+    # 在生产环境中，应该使用 Jinja2Templates 或者正确配置静态文件路径
+    # 这里为了简化部署，直接读取文件内容返回
+    import os
+    template_path = os.path.join(os.path.dirname(__file__), "templates", "admin.html")
+    if os.path.exists(template_path):
+        with open(template_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return "Admin template not found."
 
 @app.get("/", status_code=200, include_in_schema=False, tags=["Utilities"])
 async def root():

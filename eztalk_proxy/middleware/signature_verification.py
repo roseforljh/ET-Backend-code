@@ -48,7 +48,7 @@ class SignatureVerificationMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.secret_keys = secret_keys
         self.signature_validity_seconds = signature_validity_seconds
-        self.excluded_paths = excluded_paths or ["/health", "/docs", "/redoc", "/openapi.json", "/"]
+        self.excluded_paths = excluded_paths or ["/health", "/docs", "/redoc", "/openapi.json", "/", "/everytalk", "/favicon.ico"]
         self.enabled = enabled
         
         if not self.enabled:
@@ -68,6 +68,12 @@ class SignatureVerificationMiddleware(BaseHTTPMiddleware):
         if self._is_excluded_path(request.url.path):
             logger.debug(f"排除路径，无需验证: {request.method} {request.url.path}")
             return await call_next(request)
+            
+        # 额外检查：如果路径以 /everytalk 开头，也跳过验证
+        # 这样可以确保 /everytalk/api/* 等子路径也被排除
+        if request.url.path.startswith("/everytalk"):
+             logger.debug(f"管理后台路径，无需验证: {request.method} {request.url.path}")
+             return await call_next(request)
         
         # 记录开始验证
         logger.info(f"🔐 开始签名验证: {request.method} {request.url.path}")

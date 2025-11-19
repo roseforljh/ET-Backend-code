@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EzTalk 管理后台</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+    <style>
+        [v-cloak] { display: none; }
+        .log-container { font-family: 'Courier New', Courier, monospace; }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen text-gray-800 font-sans">
+    <div id="app" v-cloak>
+        
+        <!-- 登录界面 -->
+        <div v-if="!isLoggedIn" class="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-500 to-purple-600">
+            <div class="bg-white p-8 rounded-xl shadow-2xl w-96 transform transition-all hover:scale-105 duration-300">
+                <h2 class="text-3xl font-bold mb-6 text-center text-gray-800">EzTalk 管理后台</h2>
+                <form @submit.prevent="login">
+                    <div class="mb-6">
+                        <label class="block text-gray-700 text-sm font-bold mb-2" for="password">密码</label>
+                        <input v-model="password" class="shadow-sm appearance-none border border-gray-300 rounded w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors" id="password" type="password" placeholder="请输入管理员密码">
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded w-full transition-colors duration-200 shadow-md" type="submit">
+                            登录
+                        </button>
+                    </div>
+                    <p v-if="loginError" class="text-red-500 text-sm mt-4 text-center bg-red-50 p-2 rounded border border-red-100">{{ loginError }}</p>
+                </form>
+            </div>
+        </div>
+
+        <!-- 主仪表盘 -->
+        <div v-else class="flex h-screen overflow-hidden">
+            <!-- 侧边栏 -->
+            <div class="w-64 bg-white shadow-md z-10 flex flex-col">
+                <div class="p-6 border-b border-gray-100">
+                    <h1 class="text-2xl font-bold text-blue-600">EzTalk Admin</h1>
+                    <p class="text-xs text-gray-400 mt-1">v{{ stats.app_version }}</p>
+                </div>
+                <nav class="flex-1 p-4 space-y-2">
+                    <a href="#" @click="currentTab = 'dashboard'" :class="{'bg-blue-50 text-blue-600': currentTab === 'dashboard', 'text-gray-600 hover:bg-gray-50': currentTab !== 'dashboard'}" class="flex items-center px-4 py-3 rounded-lg transition-colors">
+                        <span class="mr-3">📊</span> 仪表盘
+                    </a>
+                    <a href="#" @click="currentTab = 'logs'" :class="{'bg-blue-50 text-blue-600': currentTab === 'logs', 'text-gray-600 hover:bg-gray-50': currentTab !== 'logs'}" class="flex items-center px-4 py-3 rounded-lg transition-colors">
+                        <span class="mr-3">📝</span> 访问日志
+                    </a>
+                    <a href="#" @click="currentTab = 'config'" :class="{'bg-blue-50 text-blue-600': currentTab === 'config', 'text-gray-600 hover:bg-gray-50': currentTab !== 'config'}" class="flex items-center px-4 py-3 rounded-lg transition-colors">
+                        <span class="mr-3">⚙️</span> 系统配置
+                    </a>
+                    <a href="#" @click="currentTab = 'security'" :class="{'bg-blue-50 text-blue-600': currentTab === 'security', 'text-gray-600 hover:bg-gray-50': currentTab !== 'security'}" class="flex items-center px-4 py-3 rounded-lg transition-colors">
+                        <span class="mr-3">🔒</span> 安全设置
+                    </a>
+                </nav>
+                <div class="p-4 border-t border-gray-100">
+                    <button @click="logout" class="flex items-center px-4 py-2 text-gray-500 hover:text-red-500 transition-colors w-full">
+                        <span class="mr-3">🚪</span> 退出登录
+                    </button>
+                </div>
+            </div>
+
+            <!-- 内容区域 -->
+            <div class="flex-1 overflow-auto bg-gray-50 p-8">
+                <!-- 顶部状态栏 -->
+                <div class="flex justify-between items-center mb-8">
+                    <h2 class="text-2xl font-bold text-gray-800">{{ tabName }}</h2>
+                    <div class="flex space-x-3">
+                        <button @click="restartService" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm shadow-sm transition-colors flex items-center">
+                            <span class="mr-2">🔄</span> 重启服务
+                        </button>
+                        <button @click="refreshData" class="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-lg text-sm shadow-sm transition-colors flex items-center">
+                            <span class="mr-2">🔃</span> 刷新
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Dashboard Tab -->
+                <div v-if="currentTab === 'dashboard'" class="space-y-6">
+                    <!-- 统计卡片 -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                            <h3 class="text-gray-500 text-xs uppercase tracking-wider font-semibold mb-2">今日访问量</h3>
+                            <p class="text-3xl font-bold text-blue-600">{{ stats.today_visits || 0 }}</p>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                            <h3 class="text-gray-500 text-xs uppercase tracking-wider font-semibold mb-2">运行时间</h3>
+                            <p class="text-3xl font-bold text-green-600">{{ stats.uptime }}</p>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                            <h3 class="text-gray-500 text-xs uppercase tracking-wider font-semibold mb-2">CPU 使用率</h3>
+                            <div class="flex items-end">
+                                <p class="text-3xl font-bold text-purple-600 mr-2">{{ stats.cpu_percent }}%</p>
+                            </div>
+                            <div class="w-full bg-gray-100 rounded-full h-1.5 mt-3">
+                                <div class="bg-purple-500 h-1.5 rounded-full transition-all duration-500" :style="{ width: stats.cpu_percent + '%' }"></div>
+                            </div>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                            <h3 class="text-gray-500 text-xs uppercase tracking-wider font-semibold mb-2">内存使用</h3>
+                            <p class="text-3xl font-bold text-orange-600">{{ stats.process_memory_mb?.toFixed(1) }} MB</p>
+                            <p class="text-xs text-gray-400 mt-1">系统总占用: {{ stats.memory_percent }}%</p>
+                        </div>
+                    </div>
+
+                    <!-- 趋势图表 -->
+                    <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                        <div class="flex justify-between items-center mb-6">
+                            <h3 class="text-lg font-bold text-gray-800">访问趋势</h3>
+                            <div class="flex space-x-2">
+                                <button @click="loadTrend('day')" :class="{'bg-blue-100 text-blue-600': trendPeriod === 'day', 'text-gray-500 hover:bg-gray-100': trendPeriod !== 'day'}" class="px-3 py-1 rounded text-sm transition-colors">24小时</button>
+                                <button @click="loadTrend('month')" :class="{'bg-blue-100 text-blue-600': trendPeriod === 'month', 'text-gray-500 hover:bg-gray-100': trendPeriod !== 'month'}" class="px-3 py-1 rounded text-sm transition-colors">30天</button>
+                                <button @click="loadTrend('year')" :class="{'bg-blue-100 text-blue-600': trendPeriod === 'year', 'text-gray-500 hover:bg-gray-100': trendPeriod !== 'year'}" class="px-3 py-1 rounded text-sm transition-colors">12个月</button>
+                            </div>
+                        </div>
+                        <div id="trendChart" style="height: 300px;"></div>
+                    </div>
+
+                    <!-- 实时日志预览 -->
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                        <div class="p-4 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
+                            <h3 class="font-bold text-gray-800">系统实时日志</h3>
+                            <label class="flex items-center text-xs text-gray-600 cursor-pointer">
+                                <input type="checkbox" v-model="autoRefreshLogs" class="mr-2 rounded text-blue-600 focus:ring-blue-500"> 自动刷新
+                            </label>
+                        </div>
+                        <div class="h-64 overflow-auto p-4 bg-gray-900 text-gray-300 log-container text-xs" ref="logContainer">
+                            <div v-for="(log, index) in logs" :key="index" class="mb-1 font-mono hover:bg-gray-800 px-1 rounded">
+                                <span class="text-gray-500 mr-2">{{ formatTime(log.timestamp) }}</span>
+                                <span :class="getLevelColor(log.level)" class="font-bold mr-2 w-16 inline-block">[{{ log.level }}]</span>
+                                <span class="text-blue-400 mr-2">{{ log.name }}:</span>
+                                <span class="text-gray-300">{{ log.message }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Logs Tab -->
+                <div v-if="currentTab === 'logs'" class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                    <div class="p-6 border-b border-gray-100">
+                        <h3 class="text-lg font-bold text-gray-800">详细访问日志</h3>
+                    </div>
+                    
+                    <!-- 筛选工具栏 -->
+                    <div class="p-4 bg-gray-50 border-b border-gray-100 flex flex-wrap gap-4 items-end">
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 mb-1">开始时间</label>
+                            <input type="datetime-local" v-model="logFilters.start_time" class="border border-gray-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 mb-1">结束时间</label>
+                            <input type="datetime-local" v-model="logFilters.end_time" class="border border-gray-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 mb-1">关键词 (IP/路径/方法)</label>
+                            <input type="text" v-model="logFilters.keyword" placeholder="搜索..." class="border border-gray-300 rounded px-2 py-1 text-sm w-48 focus:ring-2 focus:ring-blue-500 focus:border-transparent" @keyup.enter="searchLogs">
+                        </div>
+                        <div class="flex gap-2">
+                            <button @click="searchLogs" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm transition-colors shadow-sm">
+                                🔍 搜索
+                            </button>
+                            <button @click="resetLogFilters" class="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-1.5 rounded text-sm transition-colors shadow-sm">
+                                重置
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm text-gray-600">
+                            <thead class="bg-gray-50 text-gray-500 uppercase text-xs font-semibold">
+                                <tr>
+                                    <th class="px-6 py-3">时间</th>
+                                    <th class="px-6 py-3">IP 地址</th>
+                                    <th class="px-6 py-3">请求方法</th>
+                                    <th class="px-6 py-3">路径</th>
+                                    <th class="px-6 py-3">状态码</th>
+                                    <th class="px-6 py-3">耗时 (ms)</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100">
+                                <tr v-for="log in accessLogs" :key="log.id" class="hover:bg-gray-50 transition-colors">
+                                    <td class="px-6 py-3 font-mono">{{ formatDateTime(log.timestamp) }}</td>
+                                    <td class="px-6 py-3">{{ log.ip_address }}</td>
+                                    <td class="px-6 py-3 font-bold" :class="getMethodColor(log.method)">{{ log.method }}</td>
+                                    <td class="px-6 py-3 font-mono text-gray-800">{{ log.path }}</td>
+                                    <td class="px-6 py-3">
+                                        <span :class="getStatusColor(log.status_code)" class="px-2 py-1 rounded text-xs font-bold">{{ log.status_code }}</span>
+                                    </td>
+                                    <td class="px-6 py-3">{{ log.process_time_ms?.toFixed(2) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="p-4 border-t border-gray-100 text-center">
+                        <button @click="loadMoreAccessLogs" class="text-blue-600 hover:text-blue-800 text-sm font-medium">加载更多</button>
+                    </div>
+                </div>
+
+                <!-- Config Tab -->
+                <div v-if="currentTab === 'config'" class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                    <div class="p-6 border-b border-gray-100 flex justify-between items-center">
+                        <h3 class="text-lg font-bold text-gray-800">环境变量配置 (.env)</h3>
+                        <button @click="showAddConfig = true" class="bg-green-500 hover:bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm shadow-sm transition-colors">
+                            + 添加配置
+                        </button>
+                    </div>
+                    <div class="p-6">
+                        <div class="grid grid-cols-1 gap-4">
+                            <div v-for="(item, index) in config" :key="index" class="bg-gray-50 p-4 rounded-lg border border-gray-200 hover:border-blue-300 transition-colors group">
+                                <div class="flex justify-between items-start mb-2">
+                                    <span class="font-mono text-sm font-bold text-gray-700 break-all">{{ item.key }}</span>
+                                    <button @click="editConfig(item)" class="text-blue-500 hover:text-blue-700 text-xs opacity-0 group-hover:opacity-100 transition-opacity">编辑</button>
+                                </div>
+                                <div class="text-xs text-gray-500 truncate font-mono bg-white p-2 rounded border border-gray-100">{{ item.value }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Security Tab -->
+                <div v-if="currentTab === 'security'" class="max-w-2xl mx-auto">
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                        <div class="p-6 border-b border-gray-100">
+                            <h3 class="text-lg font-bold text-gray-800">修改管理员密码</h3>
+                        </div>
+                        <div class="p-8">
+                            <form @submit.prevent="changePassword">
+                                <div class="mb-6">
+                                    <label class="block text-gray-700 text-sm font-bold mb-2">当前密码</label>
+                                    <input v-model="passwordForm.old_password" type="password" class="shadow-sm appearance-none border border-gray-300 rounded w-full py-2.5 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                                </div>
+                                <div class="mb-6">
+                                    <label class="block text-gray-700 text-sm font-bold mb-2">新密码</label>
+                                    <input v-model="passwordForm.new_password" type="password" class="shadow-sm appearance-none border border-gray-300 rounded w-full py-2.5 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                                </div>
+                                <div class="mb-8">
+                                    <label class="block text-gray-700 text-sm font-bold mb-2">确认新密码</label>
+                                    <input v-model="passwordForm.confirm_password" type="password" class="shadow-sm appearance-none border border-gray-300 rounded w-full py-2.5 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                                </div>
+                                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-md transition-colors">
+                                    更新密码
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Edit Config Modal -->
+        <div v-if="editingConfig || showAddConfig" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 backdrop-blur-sm transition-opacity">
+            <div class="bg-white p-8 rounded-xl shadow-2xl w-96 transform transition-all scale-100">
+                <h3 class="text-xl font-bold mb-6 text-gray-800">{{ showAddConfig ? '添加新配置' : '编辑配置' }}</h3>
+                <div class="mb-4">
+                    <label class="block text-gray-700 text-sm font-bold mb-2">配置项 (Key)</label>
+                    <input v-model="configForm.key" :disabled="!showAddConfig" class="shadow-sm border border-gray-300 rounded w-full py-2 px-3 text-gray-700 bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-transparent" :class="{'cursor-not-allowed': !showAddConfig}">
+                </div>
+                <div class="mb-8">
+                    <label class="block text-gray-700 text-sm font-bold mb-2">值 (Value)</label>
+                    <textarea v-model="configForm.value" class="shadow-sm border border-gray-300 rounded w-full py-2 px-3 text-gray-700 h-32 focus:ring-2 focus:ring-blue-500 focus:border-transparent"></textarea>
+                </div>
+                <div class="flex justify-end space-x-3">
+                    <button @click="cancelEdit" class="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 py-2 px-4 rounded-lg transition-colors">取消</button>
+                    <button @click="saveConfig" class="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg shadow-md transition-colors">保存</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp } = Vue
+
+        createApp({
+            data() {
+                return {
+                    isLoggedIn: false,
+                    password: '',
+                    loginError: '',
+                    currentTab: 'dashboard',
+                    stats: {},
+                    logs: [],
+                    accessLogs: [],
+                    config: [],
+                    autoRefreshLogs: true,
+                    editingConfig: null,
+                    showAddConfig: false,
+                    configForm: { key: '', value: '' },
+                    passwordForm: { old_password: '', new_password: '', confirm_password: '' },
+                    trendPeriod: 'day',
+                    timer: null,
+                    chartInstance: null,
+                    logFilters: {
+                        start_time: '',
+                        end_time: '',
+                        keyword: ''
+                    }
+                }
+            },
+            computed: {
+                tabName() {
+                    const names = {
+                        'dashboard': '系统概览',
+                        'logs': '访问日志',
+                        'config': '系统配置',
+                        'security': '安全中心'
+                    };
+                    return names[this.currentTab];
+                }
+            },
+            watch: {
+                currentTab(newVal) {
+                    if (newVal === 'dashboard') {
+                        this.$nextTick(() => this.initChart());
+                    } else if (newVal === 'logs') {
+                        this.fetchAccessLogs();
+                    }
+                },
+                trendPeriod() {
+                    this.loadTrend(this.trendPeriod);
+                }
+            },
+            mounted() {
+                this.checkSession();
+                window.addEventListener('resize', () => {
+                    if (this.chartInstance) this.chartInstance.resize();
+                });
+            },
+            methods: {
+                async checkSession() {
+                    try {
+                        await axios.get('/everytalk/api/stats');
+                        this.isLoggedIn = true;
+                        this.startPolling();
+                        this.$nextTick(() => this.initChart());
+                    } catch (e) {
+                        this.isLoggedIn = false;
+                    }
+                },
+                async login() {
+                    try {
+                        await axios.post('/everytalk/api/login', { password: this.password });
+                        this.isLoggedIn = true;
+                        this.loginError = '';
+                        this.startPolling();
+                        this.$nextTick(() => this.initChart());
+                    } catch (e) {
+                        this.loginError = '密码错误，请重试';
+                    }
+                },
+                logout() {
+                    document.cookie = "admin_session=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+                    this.isLoggedIn = false;
+                    this.password = '';
+                    clearInterval(this.timer);
+                },
+                startPolling() {
+                    this.refreshData();
+                    this.timer = setInterval(() => {
+                        if (this.isLoggedIn) {
+                            if (this.currentTab === 'dashboard') {
+                                this.fetchStats();
+                                if (this.autoRefreshLogs) this.fetchLogs();
+                            }
+                        }
+                    }, 3000);
+                },
+                refreshData() {
+                    this.fetchStats();
+                    this.fetchLogs();
+                    this.fetchConfig();
+                    if (this.currentTab === 'logs') this.fetchAccessLogs();
+                    if (this.currentTab === 'dashboard') this.loadTrend(this.trendPeriod);
+                },
+                async fetchStats() {
+                    try {
+                        const res = await axios.get('/everytalk/api/stats');
+                        this.stats = res.data;
+                    } catch (e) { console.error(e); }
+                },
+                async fetchLogs() {
+                    try {
+                        const res = await axios.get('/everytalk/api/logs?limit=50');
+                        this.logs = res.data;
+                        this.$nextTick(() => {
+                            const container = this.$refs.logContainer;
+                            if (container && this.autoRefreshLogs) container.scrollTop = container.scrollHeight;
+                        });
+                    } catch (e) { console.error(e); }
+                },
+                async fetchAccessLogs(append = false) {
+                    try {
+                        const offset = append ? this.accessLogs.length : 0;
+                        let url = `/everytalk/api/stats/access-logs?limit=50&offset=${offset}`;
+                        
+                        if (this.logFilters.start_time) url += `&start_time=${new Date(this.logFilters.start_time).toISOString()}`;
+                        if (this.logFilters.end_time) url += `&end_time=${new Date(this.logFilters.end_time).toISOString()}`;
+                        if (this.logFilters.keyword) url += `&keyword=${encodeURIComponent(this.logFilters.keyword)}`;
+
+                        const res = await axios.get(url);
+                        
+                        if (append) {
+                            this.accessLogs = [...this.accessLogs, ...res.data];
+                        } else {
+                            this.accessLogs = res.data;
+                        }
+                    } catch (e) { console.error(e); }
+                },
+                searchLogs() {
+                    this.fetchAccessLogs(false);
+                },
+                resetLogFilters() {
+                    this.logFilters = {
+                        start_time: '',
+                        end_time: '',
+                        keyword: ''
+                    };
+                    this.fetchAccessLogs(false);
+                },
+                async loadMoreAccessLogs() {
+                    await this.fetchAccessLogs(true);
+                },
+                async fetchConfig() {
+                    try {
+                        const res = await axios.get('/everytalk/api/config');
+                        this.config = res.data;
+                    } catch (e) { console.error(e); }
+                },
+                async loadTrend(period) {
+                    this.trendPeriod = period;
+                    try {
+                        const res = await axios.get(`/everytalk/api/stats/trend?period=${period}`);
+                        const data = res.data;
+                        
+                        if (this.chartInstance) {
+                            this.chartInstance.setOption({
+                                xAxis: { data: data.map(item => item.time) },
+                                series: [{ data: data.map(item => item.count) }]
+                            });
+                        }
+                    } catch (e) { console.error(e); }
+                },
+                initChart() {
+                    const chartDom = document.getElementById('trendChart');
+                    if (!chartDom) return;
+                    
+                    this.chartInstance = echarts.init(chartDom);
+                    this.chartInstance.setOption({
+                        tooltip: { trigger: 'axis' },
+                        grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                        xAxis: { type: 'category', boundaryGap: false, data: [] },
+                        yAxis: { type: 'value' },
+                        series: [{
+                            name: '访问量',
+                            type: 'line',
+                            smooth: true,
+                            areaStyle: { opacity: 0.3, color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{offset: 0, color: '#3B82F6'}, {offset: 1, color: '#fff'}]) },
+                            itemStyle: { color: '#3B82F6' },
+                            data: []
+                        }]
+                    });
+                    this.loadTrend(this.trendPeriod);
+                },
+                async changePassword() {
+                    if (this.passwordForm.new_password !== this.passwordForm.confirm_password) {
+                        alert('两次输入的密码不一致');
+                        return;
+                    }
+                    try {
+                        await axios.post('/everytalk/api/password', {
+                            old_password: this.passwordForm.old_password,
+                            new_password: this.passwordForm.new_password
+                        });
+                        alert('密码修改成功，请重新登录');
+                        this.logout();
+                    } catch (e) {
+                        alert(e.response?.data?.detail || '密码修改失败');
+                    }
+                },
+                formatTime(isoString) {
+                    return isoString.split('T')[1].split('.')[0];
+                },
+                formatDateTime(isoString) {
+                    return new Date(isoString).toLocaleString('zh-CN');
+                },
+                getLevelColor(level) {
+                    switch(level) {
+                        case 'ERROR': return 'text-red-500';
+                        case 'WARNING': return 'text-yellow-500';
+                        case 'INFO': return 'text-green-500';
+                        default: return 'text-gray-500';
+                    }
+                },
+                getMethodColor(method) {
+                     switch(method) {
+                        case 'GET': return 'text-blue-600';
+                        case 'POST': return 'text-green-600';
+                        case 'PUT': return 'text-orange-600';
+                        case 'DELETE': return 'text-red-600';
+                        default: return 'text-gray-600';
+                    }
+                },
+                getStatusColor(code) {
+                    if (code >= 200 && code < 300) return 'bg-green-100 text-green-800';
+                    if (code >= 300 && code < 400) return 'bg-blue-100 text-blue-800';
+                    if (code >= 400 && code < 500) return 'bg-yellow-100 text-yellow-800';
+                    return 'bg-red-100 text-red-800';
+                },
+                editConfig(item) {
+                    this.configForm = { key: item.key, value: item.value };
+                    this.editingConfig = item;
+                    this.showAddConfig = false;
+                },
+                cancelEdit() {
+                    this.editingConfig = null;
+                    this.showAddConfig = false;
+                    this.configForm = { key: '', value: '' };
+                },
+                async saveConfig() {
+                    try {
+                        await axios.post('/everytalk/api/config', this.configForm);
+                        this.cancelEdit();
+                        this.fetchConfig();
+                        alert('配置已保存，可能需要重启服务生效');
+                    } catch (e) {
+                        alert('配置保存失败');
+                    }
+                },
+                async restartService() {
+                    if (confirm('确定要重启服务吗？这将导致短暂的服务中断。')) {
+                        try {
+                            await axios.post('/everytalk/api/restart');
+                            alert('服务重启指令已发送，请稍后刷新页面。');
+                        } catch (e) {
+                            alert('重启请求失败');
+                        }
+                    }
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+</html>
