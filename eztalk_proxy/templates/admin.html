@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EzTalk 管理后台</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%232563eb%22/><path d=%22M30 35 C30 25 45 25 50 35 C55 25 70 25 70 35 V 55 C70 65 30 65 30 55 Z%22 fill=%22white%22/><circle cx=%2238%22 cy=%2245%22 r=%223%22 fill=%22%232563eb%22/><circle cx=%2262%22 cy=%2245%22 r=%223%22 fill=%22%232563eb%22/></svg>">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
@@ -44,7 +45,7 @@
         <div v-else class="flex h-screen overflow-hidden">
             <!-- 侧边栏 -->
             <div class="w-64 bg-white shadow-md z-10 flex flex-col">
-                <div class="p-6 border-b border-gray-100">
+                <div class="p-6 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors" @click="currentTab = 'dashboard'" title="返回仪表盘">
                     <h1 class="text-2xl font-bold text-blue-600">EzTalk Admin</h1>
                     <p class="text-xs text-gray-400 mt-1">v{{ stats.app_version }}</p>
                 </div>
