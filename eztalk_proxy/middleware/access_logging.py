@@ -29,8 +29,17 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
              try:
                 async with async_session_maker() as session:
                     # 获取真实 IP (处理代理情况)
+                    # 优先级: CF-Connecting-IP (Cloudflare) > X-Real-IP (Nginx) > X-Forwarded-For > request.client.host
+                    cf_ip = request.headers.get("CF-Connecting-IP")
+                    x_real_ip = request.headers.get("X-Real-IP")
                     forwarded = request.headers.get("X-Forwarded-For")
-                    if forwarded:
+                    
+                    if cf_ip:
+                        real_ip = cf_ip
+                    elif x_real_ip:
+                        real_ip = x_real_ip
+                    elif forwarded:
+                        # X-Forwarded-For 可能包含多个 IP，第一个通常是真实客户端 IP
                         real_ip = forwarded.split(",")[0].strip()
                     else:
                         real_ip = request.client.host
