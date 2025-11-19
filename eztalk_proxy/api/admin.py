@@ -111,9 +111,18 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     # 获取今日访问量 (北京时间)
     beijing_tz = timezone(timedelta(hours=8))
     now_bj = datetime.now(beijing_tz)
-    today_start_bj = now_bj.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+    # 获取北京时间今天的 0 点
+    today_start_bj = now_bj.replace(hour=0, minute=0, second=0, microsecond=0)
+    # 转换为 UTC 时间 (naive) 用于数据库查询
+    today_start_utc = today_start_bj.astimezone(timezone.utc).replace(tzinfo=None)
     
-    result = await db.execute(select(func.count()).select_from(AccessLog).where(AccessLog.timestamp >= today_start_bj))
+    # 仅统计 /chat 接口的访问量
+    result = await db.execute(
+        select(func.count())
+        .select_from(AccessLog)
+        .where(AccessLog.timestamp >= today_start_utc)
+        .where(AccessLog.path.contains("/chat"))
+    )
     today_visits = result.scalar()
 
     return {
@@ -133,34 +142,32 @@ async def get_stats_trend(period: str = "day", db: AsyncSession = Depends(get_db
     获取访问趋势数据
     period: day (按小时), month (按天), year (按月)
     """
-    # 使用北京时间计算
-    beijing_tz = timezone(timedelta(hours=8))
-    now = datetime.now(beijing_tz).replace(tzinfo=None)
+    # 数据库存储的是 UTC 时间，计算查询范围时需使用 UTC
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     
     if period == "day":
-        start_time = now - timedelta(hours=24)
-        # SQLite 的 strftime 格式
+        start_time = now_utc - timedelta(hours=24)
+        # SQLite 的 strftime 格式 (注意：数据库是UTC，展示需要+8小时转为北京时间)
+        # 用 modifiers '+08:00'
         group_format = "%Y-%m-%d %H:00"
-        interval = timedelta(hours=1)
     elif period == "month":
-        start_time = now - timedelta(days=30)
+        start_time = now_utc - timedelta(days=30)
         group_format = "%Y-%m-%d"
-        interval = timedelta(days=1)
     elif period == "year":
-        start_time = now - timedelta(days=365)
+        start_time = now_utc - timedelta(days=365)
         group_format = "%Y-%m"
-        interval = timedelta(days=30) # 近似
     else:
         raise HTTPException(status_code=400, detail="Invalid period")
 
     # 使用 SQLAlchemy 构建查询
-    # 注意：SQLite 的日期函数
+    # func.strftime(format, timestring, modifier, ...)
     stmt = (
         select(
-            func.strftime(group_format, AccessLog.timestamp).label('time_bucket'),
+            func.strftime(group_format, AccessLog.timestamp, '+08:00').label('time_bucket'),
             func.count().label('count')
         )
         .where(AccessLog.timestamp >= start_time)
+        .where(AccessLog.path.contains("/chat"))
         .group_by('time_bucket')
         .order_by('time_bucket')
     )
@@ -182,7 +189,8 @@ async def get_access_logs(
     """
     获取详细访问日志，支持筛选
     """
-    stmt = select(AccessLog).order_by(AccessLog.timestamp.desc())
+    # 默认只显示 /chat 接口的日志
+    stmt = select(AccessLog).where(AccessLog.path.contains("/chat")).order_by(AccessLog.timestamp.desc())
     
     if start_time:
         stmt = stmt.where(AccessLog.timestamp >= start_time)
