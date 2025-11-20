@@ -363,14 +363,34 @@ def prepare_gemini_rest_api_request(
         gemini_tools_payload.append({"googleSearch": {}})
         logger.info(f"{log_prefix}: Enabled Google Search tool for Gemini.")
     
+    # 3. 检查是否已在 tools 中包含了 codeExecution 或 googleSearch
+    # 如果客户端已经传入了这些工具（例如我们修复后的 Android 端），则不需要重复添加，或者需要合并
+    
+    client_provided_tools = chat_input.tools or []
+    has_code_execution_in_tools = any("codeExecution" in t for t in client_provided_tools)
+    has_google_search_in_tools = any("googleSearch" in t for t in client_provided_tools)
+
     # 代码执行工具
-    if should_enable_code_execution(chat_input, request_id):
+    if should_enable_code_execution(chat_input, request_id) and not has_code_execution_in_tools:
         gemini_tools_payload.append({"codeExecution": {}})
-        logger.info(f"{log_prefix}: Enabled Code Execution tool for Gemini.")
+        logger.info(f"{log_prefix}: Enabled Code Execution tool for Gemini (auto-injected).")
+    elif has_code_execution_in_tools:
+        logger.info(f"{log_prefix}: Code Execution tool already present in client request.")
 
     if chat_input.tools:
         converted_declarations: List[Dict[str, Any]] = []
         for tool_entry in chat_input.tools:
+            # 处理 Google 原生工具格式 (codeExecution, googleSearch)
+            if "codeExecution" in tool_entry:
+                gemini_tools_payload.append({"codeExecution": {}})
+                continue
+            if "googleSearch" in tool_entry:
+                # 避免重复添加
+                if not any("googleSearch" in t for t in gemini_tools_payload):
+                    gemini_tools_payload.append({"googleSearch": {}})
+                continue
+                
+            # 处理 OpenAI 格式的 Function Calling
             if tool_entry.get("type") == "function" and "function" in tool_entry:
                 func_data = tool_entry["function"]
                 declaration = {
