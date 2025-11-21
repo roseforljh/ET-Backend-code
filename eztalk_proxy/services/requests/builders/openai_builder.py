@@ -28,10 +28,23 @@ from ....models.api_models import ChatRequestModel
 logger = logging.getLogger("EzTalkProxy.Services.Requests.OpenAIBuilder")
 
 
-def is_gemini_model_in_openai_format(model_name: str) -> bool:
-    """Detect if the target model is a Gemini model called via OpenAI-compatible schema."""
-    if not model_name:
-        return False
+def is_gemini_model_in_openai_format(request_data: ChatRequestModel) -> bool:
+    """
+    Detect if the target model is a Gemini model called via OpenAI-compatible schema.
+    Checks:
+    1. 'channel' or 'provider' fields for explicit Gemini identifiers (preferred).
+    2. 'model' name for "gemini" keyword (fallback).
+    """
+    # 1. Check explicit channel/provider indicators first
+    channel = (getattr(request_data, "channel", None) or "").lower()
+    provider = (request_data.provider or "").lower()
+    
+    gemini_keywords = ["gemini", "google", "aistudio", "ai studio"]
+    if any(k in channel for k in gemini_keywords) or any(k in provider for k in gemini_keywords):
+        return True
+
+    # 2. Fallback to model name check
+    model_name = request_data.model or ""
     return "gemini" in model_name.lower()
 
 
@@ -66,7 +79,7 @@ def prepare_openai_request(
         "x-api-key": request_data.api_key,
     }
     
-    is_gemini = is_gemini_model_in_openai_format(request_data.model)
+    is_gemini = is_gemini_model_in_openai_format(request_data)
     if is_gemini:
         headers["x-goog-api-key"] = request_data.api_key
 
