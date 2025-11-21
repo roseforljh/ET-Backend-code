@@ -30,22 +30,12 @@ logger = logging.getLogger("EzTalkProxy.Services.Requests.OpenAIBuilder")
 
 def is_gemini_model_in_openai_format(request_data: ChatRequestModel) -> bool:
     """
-    Detect if the target model is a Gemini model called via OpenAI-compatible schema.
-    Checks:
-    1. 'channel' or 'provider' fields for explicit Gemini identifiers (preferred).
-    2. 'model' name for "gemini" keyword (fallback).
+    Detect Gemini strictly by channel only.
+    Requirement: Only when channel indicates Gemini should we treat as Gemini.
     """
-    # 1. Check explicit channel/provider indicators first
     channel = (getattr(request_data, "channel", None) or "").lower()
-    provider = (request_data.provider or "").lower()
-    
-    gemini_keywords = ["gemini", "google", "aistudio", "ai studio"]
-    if any(k in channel for k in gemini_keywords) or any(k in provider for k in gemini_keywords):
-        return True
-
-    # 2. Fallback to model name check
-    model_name = request_data.model or ""
-    return "gemini" in model_name.lower()
+    gemini_keywords = ["gemini", "google", "aistudio", "ai studio", "官方"]
+    return any(k in channel for k in gemini_keywords)
 
 
 def add_system_prompt_if_needed(messages: List[Dict[str, Any]], request_id: str) -> List[Dict[str, Any]]:

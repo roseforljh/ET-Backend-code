@@ -1,5 +1,6 @@
 import  logging
 import  re
+import  orjson
 from  typing  import  Dict,  Any,  AsyncGenerator
 
 from  ...models.api_models  import  AppStreamEventPy
@@ -58,6 +59,69 @@ def _ensure_code_blocks_closed(text: str) -> str:
     """
     return text
 
+def _try_parse_openai_gemini_code_events(content_chunk: Any) -> tuple[bool, list[Dict[str, Any]]]:
+    """
+    解析 OpenAI 兼容流中的 Gemini 代码执行特殊增量。
+    - content 可能是 JSON 字符串，包含 executableCode 或 codeExecutionResult
+    - 返回: (是否已处理, 事件列表[dict])
+    """
+    events: list[Dict[str, Any]] = []
+    try:
+        # 统一转文本
+        if isinstance(content_chunk, (bytes, bytearray)):
+            text = content_chunk.decode("utf-8", "ignore")
+        else:
+            text = str(content_chunk)
+        s = (text or "").strip()
+        # 必须形如 JSON
+        if not s or not (s.startswith("{") or s.startswith("[")):
+            return False, []
+        data = orjson.loads(s)
+
+        def handle_obj(obj: Any) -> None:
+            if not isinstance(obj, dict):
+                return
+            # 可执行代码
+            if "executableCode" in obj:
+                ec = obj.get("executableCode") or {}
+                code = ec.get("code") or ""
+                lang = ec.get("language") or "python"
+                if code:
+                    events.append({
+                        "type": "code_executable",
+                        "executable_code": code,
+                        "code_language": lang
+                    })
+            # 执行结果
+            if "codeExecutionResult" in obj:
+                res = obj.get("codeExecutionResult") or {}
+                output = res.get("output") or ""
+                outcome = res.get("outcome") or res.get("status") or ""
+                if str(outcome).upper() in ("OUTCOME_OK", "SUCCESS", "OK"):
+                    outcome_norm = "success"
+                elif outcome:
+                    outcome_norm = "error"
+                else:
+                    outcome_norm = "success" if output else None
+                ev: Dict[str, Any] = {
+                    "type": "code_execution_result",
+                    "code_execution_output": output
+                }
+                if outcome_norm:
+                    ev["code_execution_outcome"] = outcome_norm
+                events.append(ev)
+
+        if isinstance(data, dict):
+            handle_obj(data)
+        elif isinstance(data, list):
+            for item in data:
+                handle_obj(item)
+
+        return (len(events) > 0), events
+    except Exception:
+        # 任意解析失败视为非代码事件
+        return False, []
+
 async def process_openai_like_sse_stream(
     parsed_sse_data: Dict[str, Any],
     current_processing_state: Dict[str, Any],
@@ -89,6 +153,17 @@ async def process_openai_like_sse_stream(
             state["had_any_reasoning"] = True
             # 分开累积思考文本，绝不混入正文最终清理
             state["accumulated_reasoning"] = str(state.get("accumulated_reasoning", "")) + str(reasoning_chunk)
+
+        # 先尝试解析 Gemini 的代码执行特殊事件（OpenAI 兼容流）
+        if _is_meaningful(content_chunk):
+            handled_code, code_events = _try_parse_openai_gemini_code_events(content_chunk)
+            if handled_code and code_events:
+                for ev in code_events:
+                    ev["timestamp"] = get_current_time_iso()
+                    logger.info(f"[STREAM_DEBUG] {log_prefix} ✅ SENDING code event: type={ev.get('type')}, len_output={len(ev.get('code_execution_output','') or ev.get('executable_code',''))}")
+                    yield ev
+                # 解析到代码事件则不按普通文本重复发送
+                content_chunk = None
 
         # 仅对正文进行清理与累积，用于类型检测与刷新判定
         if _is_meaningful(content_chunk):

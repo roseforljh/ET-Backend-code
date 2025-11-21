@@ -225,11 +225,16 @@ async def chat_proxy_entrypoint(
         logger.error(f"{log_prefix}: Failed to parse or validate chat request JSON: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Invalid chat request data: {e}")
 
-    # 🆕 默认平台强制使用 OpenAI 兼容处理器（因为默认API是聚合商，不是Google官方）
+    # 🆕 默认配置卡片默认走 Gemini 渠道（按用户要求）
     if is_default_provider:
-        channel = "openai"
-        reason = "default_provider"
-        logger.info(f"{log_prefix}: Forcing OpenAI-compatible channel for default provider")
+        channel = "gemini"
+        reason = "default_provider_gemini"
+        # 显式标记 channel，确保下游仅凭 channel 判定走 Gemini 语义
+        try:
+            setattr(chat_input, "channel", "gemini")
+        except Exception:
+            pass
+        logger.info(f"{log_prefix}: Forcing Gemini channel for default provider")
     else:
         # 使用新版分发：channel 优先（实现"文本模式 Gemini 可走聚合商链路"）
         channel, reason = decide_chat_channel_v2(chat_input)

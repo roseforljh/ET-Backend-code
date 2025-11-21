@@ -96,8 +96,12 @@ def is_gemini_model(model_name: str) -> bool:
     return "gemini" in model_lower
 
 def is_gemini_openai_compatible_request(chat_input) -> bool:
-    """检测是否为使用OpenAI兼容格式的Gemini模型请求"""
-    return is_gemini_model(chat_input.model)
+    """仅当 channel 明确表示为 Gemini 时，视为 Gemini 请求。
+    按用户要求：只看 channel，其他条件一律忽略且不做回退。
+    """
+    channel = (getattr(chat_input, "channel", None) or "").lower()
+    gemini_keys = ["gemini", "google", "aistudio", "ai studio", "官方"]
+    return any(k in channel for k in gemini_keys)
 
 def supports_multimodal_content(model_name: str) -> bool:
     """检测模型是否支持多模态内容（音频、视频、图像）

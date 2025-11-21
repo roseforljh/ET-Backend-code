@@ -4,11 +4,32 @@
 """
 import time
 import logging
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional, Any
 from collections import defaultdict
 import threading
 
+from ..core.config import DEFAULT_TEXT_MODELS
+
 logger = logging.getLogger("EzTalkProxy.RateLimiter")
+
+
+def _normalize_provider(provider: Optional[str]) -> str:
+    if not provider:
+        return ""
+    return (provider or "").strip().lower()
+
+
+def _is_default_text_channel(provider: Optional[str]) -> bool:
+    """
+    仅依据“配置卡片”判定是否默认通道：
+    - provider 在 {"默认", "default", "default_text"} 即视为默认配置卡片
+    - 不再依据 api_address
+    """
+    try:
+        p = _normalize_provider(provider)
+        return p in {"默认", "default", "default_text"}
+    except Exception:
+        return False
 
 
 class RateLimiter:
@@ -23,26 +44,31 @@ class RateLimiter:
         self._lock = threading.Lock()
         
         # 模型限制配置: {model_name: (max_requests, window_seconds)}
+        # 仅对“默认配置卡片”下的指定模型生效；用户自定义渠道不受限
         self._limits = {
-            "gemini-2.5-pro-1M": (50, 24 * 3600),  # 1次/24小时 (测试用，正式环境应为50)
+            "gemini-2.5-pro": (50, 24 * 3600),
+            "gemini-2.5-pro-1M": (50, 24 * 3600),
         }
     
-    def check_and_record(self, device_id: str, model: str) -> Tuple[bool, int, int]:
+    def check_and_record(
+        self,
+        device_id: str,
+        model: str,
+        *,
+        api_address: Optional[str] = None,  # 保留参数以兼容调用方，但不参与判断
+        provider: Optional[str] = None
+    ) -> Tuple[bool, int, int]:
         """
-        检查是否允许请求，并记录使用
+        检查是否允许请求，并记录使用（仅“默认配置卡片”生效）
         
         Args:
             device_id: 设备唯一标识符
             model: 模型名称
-            
-        Returns:
-            (is_allowed, remaining_quota, reset_time_seconds)
-            - is_allowed: 是否允许此次请求
-            - remaining_quota: 剩余配额
-            - reset_time_seconds: 配额重置时间（Unix时间戳）
+            api_address: （忽略）不参与是否默认卡片的判断
+            provider: provider/channel（用于判断是否默认卡片）
         """
-        # 如果模型没有限制，直接允许
-        if model not in self._limits:
+        # 仅当命中“默认文本通道”且模型在受限清单时限流；否则放行不计数
+        if not _is_default_text_channel(provider) or model not in self._limits:
             return True, -1, 0
         
         max_requests, window_seconds = self._limits[model]
@@ -67,7 +93,7 @@ class RateLimiter:
                 remaining = 0
                 is_allowed = False
                 logger.warning(
-                    f"Rate limit exceeded for device={device_id[:8]}..., model={model}. "
+                    f"[DEFAULT_LIMIT] Rate limit exceeded for device={device_id[:8]}..., model={model}. "
                     f"Usage: {current_usage}/{max_requests}. Reset at: {reset_time}"
                 )
             else:
@@ -79,24 +105,25 @@ class RateLimiter:
                 reset_time = int(oldest_record + window_seconds)
                 is_allowed = True
                 logger.info(
-                    f"Rate limit check passed for device={device_id[:8]}..., model={model}. "
+                    f"[DEFAULT_LIMIT] Rate limit check passed for device={device_id[:8]}..., model={model}. "
                     f"Usage: {current_usage + 1}/{max_requests}, Remaining: {remaining}"
                 )
             
             return is_allowed, remaining, reset_time
     
-    def get_usage_info(self, device_id: str, model: str) -> Dict[str, any]:
+    def get_usage_info(
+        self,
+        device_id: str,
+        model: str,
+        *,
+        api_address: Optional[str] = None,  # 保留参数以兼容调用方，但不参与判断
+        provider: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         获取使用情况信息（不记录使用）
-        
-        Args:
-            device_id: 设备唯一标识符
-            model: 模型名称
-            
-        Returns:
-            包含使用情况的字典
+        仅当命中“默认文本通道 + 受限模型”时返回详细限流信息，否则返回未限流。
         """
-        if model not in self._limits:
+        if model not in self._limits or not _is_default_text_channel(provider):
             return {
                 "limited": False,
                 "model": model
