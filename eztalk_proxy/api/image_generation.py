@@ -164,6 +164,18 @@ def _fallback_response(reason: str, user_text: str = None) -> ImageGenerationRes
         seed=random.randint(1, 2**31 - 1)
     )
 
+def _safe_dump_timings(timings_obj: Any) -> Dict[str, Any]:
+    try:
+        if isinstance(timings_obj, dict):
+            return timings_obj
+        if hasattr(timings_obj, "model_dump"):
+            return timings_obj.model_dump()
+        if hasattr(timings_obj, "dict"):
+            return timings_obj.dict()
+        return {"inference": getattr(timings_obj, "inference", 0)}
+    except Exception:
+        return {"inference": 0}
+
 def _as_image_urls(ext_images: Any) -> List[Dict[str, str]]:
     urls: List[Dict[str, str]] = []
     if not isinstance(ext_images, list):
@@ -1109,7 +1121,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                                 conv_for_save = persist_key
                                 if conv_for_save and getattr(normalized_no_hist, "images", None):
                                     images_payload = [{"url": img.url} for img in normalized_no_hist.images if getattr(img, "url", None)]
-                                    timings_dict = normalized_no_hist.timings.model_dump() if hasattr(normalized_no_hist.timings, "model_dump") else (normalized_no_hist.timings.dict() if hasattr(normalized_no_hist.timings, "dict") else normalized_no_hist.timings)
+                                    timings_dict = _safe_dump_timings(normalized_no_hist.timings)
                                     meta_payload = {"text": normalized_no_hist.text, "seed": normalized_no_hist.seed, "timings": timings_dict}
                                     logger.info(f"[IMG HIST] Saving {len(images_payload)} image(s) for conversation={conv_for_save} (no-history retry)")
                                     save_images(conv_for_save, images_payload, meta_payload)
@@ -1166,7 +1178,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                                 conv_for_save = persist_key
                                 if conv_for_save and getattr(normalized_alt, "images", None):
                                     images_payload = [{"url": img.url} for img in normalized_alt.images if getattr(img, "url", None)]
-                                    timings_dict = normalized_alt.timings.model_dump() if hasattr(normalized_alt.timings, "model_dump") else (normalized_alt.timings.dict() if hasattr(normalized_alt.timings, "dict") else normalized_alt.timings)
+                                    timings_dict = _safe_dump_timings(normalized_alt.timings)
                                     meta_payload = {"text": normalized_alt.text, "seed": normalized_alt.seed, "timings": timings_dict}
                                     logger.info(f"[IMG HIST] Saving {len(images_payload)} image(s) for conversation={conv_for_save} (alt retry)")
                                     save_images(conv_for_save, images_payload, meta_payload)
@@ -1253,7 +1265,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                                         conv_for_save = persist_key
                                         if conv_for_save and getattr(normalized, "images", None):
                                             images_payload = [{"url": img.url} for img in normalized.images if getattr(img, "url", None)]
-                                            timings_dict = normalized.timings.model_dump() if hasattr(normalized.timings, "model_dump") else (normalized.timings.dict() if hasattr(normalized.timings, "dict") else normalized.timings)
+                                            timings_dict = _safe_dump_timings(normalized.timings)
                                             meta_payload = {"text": normalized.text, "seed": normalized.seed, "timings": timings_dict}
                                             logger.info(f"[IMG HIST] Saving {len(images_payload)} image(s) for conversation={conv_for_save} (alt auth)")
                                             save_images(conv_for_save, images_payload, meta_payload)
@@ -1342,7 +1354,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                 conv_for_save = persist_key
                 if conv_for_save and getattr(normalized, "images", None):
                     images_payload = [{"url": img.url} for img in normalized.images if getattr(img, "url", None)]
-                    timings_dict = normalized.timings.model_dump() if hasattr(normalized.timings, "model_dump") else (normalized.timings.dict() if hasattr(normalized.timings, "dict") else normalized.timings)
+                    timings_dict = _safe_dump_timings(normalized.timings)
                     meta_payload = {"text": normalized.text, "seed": normalized.seed, "timings": timings_dict}
                     logger.info(f"[IMG HIST] Saving {len(images_payload)} image(s) for conversation={conv_for_save}")
                     save_images(conv_for_save, images_payload, meta_payload)
@@ -1375,7 +1387,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                                     conv_for_save = persist_key
                                     if conv_for_save and getattr(normalized2, "images", None):
                                         images_payload = [{"url": img.url} for img in normalized2.images if getattr(img, "url", None)]
-                                        timings_dict = normalized2.timings.model_dump() if hasattr(normalized2.timings, "model_dump") else (normalized2.timings.dict() if hasattr(normalized2.timings, "dict") else normalized2.timings)
+                                        timings_dict = _safe_dump_timings(normalized2.timings)
                                         meta_payload = {"text": normalized2.text, "seed": normalized2.seed, "timings": timings_dict}
                                         logger.info(f"[IMG HIST] Saving {len(images_payload)} image(s) for conversation={conv_for_save} (retry)")
                                         save_images(conv_for_save, images_payload, meta_payload)
