@@ -99,3 +99,89 @@ async def synthesize_minimax_t2a(text: str, voice_id: str = "male-qn-qingse", ap
     except Exception as e:
         logger.exception(f"Minimax T2A exception: {e}")
         return None, 24000
+
+async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qingse", api_url: str = None, api_key: str = None):
+    """
+    调用 Minimax T2A 接口进行流式语音合成
+    Yields: pcm_bytes (chunk)
+    """
+    final_api_key = api_key or os.getenv("MINIMAX_T2A_API_KEY")
+    
+    if not final_api_key:
+        logger.warning("Minimax API Key not provided, skipping stream TTS")
+        return
+        
+    if not api_url:
+        logger.error("Minimax API URL not provided")
+        return
+        
+    url = api_url.strip()
+    
+    headers = {
+        "Authorization": f"Bearer {final_api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "speech-2.6-hd",
+        "text": text,
+        "stream": True,
+        "voice_setting": {
+            "voice_id": voice_id,
+            "speed": 1.0,
+            "vol": 1.0,
+            "pitch": 0,
+            "emotion": "happy"
+        },
+        "audio_setting": {
+            "sample_rate": 24000,
+            "bitrate": 128000,
+            "format": "pcm",
+            "channel": 1
+        },
+        "subtitle_enable": False
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as response:
+                if response.status_code != 200:
+                    logger.error(f"Minimax Stream T2A failed: {response.status_code}")
+                    # 读取错误信息
+                    error_body = await response.aread()
+                    logger.error(f"Error body: {error_body.decode('utf-8', errors='ignore')}")
+                    return
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                        
+                    if line.startswith("data: "):
+                        json_str = line[6:] # 去掉 "data: " 前缀
+                        try:
+                            import json
+                            data_obj = json.loads(json_str)
+                            
+                            # 检查是否有错误
+                            base_resp = data_obj.get("base_resp", {})
+                            if base_resp.get("status_code") != 0:
+                                logger.error(f"Minimax Stream error: {base_resp.get('status_msg')}")
+                                continue
+                                
+                            # 提取音频数据
+                            inner_data = data_obj.get("data", {})
+                            audio_hex = inner_data.get("audio")
+                            
+                            if audio_hex:
+                                pcm_chunk = bytes.fromhex(audio_hex)
+                                yield pcm_chunk
+                                
+                            # 检查是否结束
+                            if inner_data.get("status") == 2:
+                                break
+                                
+                        except Exception as e:
+                            logger.warning(f"Failed to parse SSE line: {line[:50]}... Error: {e}")
+                            
+    except Exception as e:
+        logger.exception(f"Minimax Stream T2A exception: {e}")

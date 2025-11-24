@@ -51,6 +51,7 @@ async def complete_voice_chat(
     tts_api_key: str = Form(None),
     tts_api_url: str = Form(None), # Minimax 需要
     tts_model: str = Form(None),
+    stream: bool = Form(False),
     
     # --- 兼容旧参数 (Legacy) ---
     api_key: str = Form(None), # 旧版 Google Key
@@ -193,7 +194,44 @@ async def complete_voice_chat(
         if not assistant_text:
             assistant_text = "抱歉，我无法理解您的问题。"
             
-        # ========== Step 3: TTS ==========
+        # ========== Step 3: Streaming Response (If enabled) ==========
+        if stream:
+            async def stream_generator():
+                # 1. 发送元数据 (STT & Chat 结果)
+                yield orjson.dumps({
+                    "type": "meta",
+                    "user_text": user_text,
+                    "assistant_text": assistant_text
+                }) + b"\n"
+                
+                # 2. 发送音频流
+                if final_tts_platform == "Minimax":
+                    try:
+                        async for pcm_chunk in minimax_handler.synthesize_minimax_t2a_stream(
+                            text=assistant_text,
+                            voice_id=voice_name,
+                            api_url=final_tts_url,
+                            api_key=final_tts_key
+                        ):
+                            if pcm_chunk:
+                                yield orjson.dumps({
+                                    "type": "audio",
+                                    "data": base64.b64encode(pcm_chunk).decode('utf-8')
+                                }) + b"\n"
+                    except Exception as e:
+                        logger.error(f"Minimax streaming failed: {e}")
+                        yield orjson.dumps({
+                            "type": "error",
+                            "message": str(e)
+                        }) + b"\n"
+                else:
+                    # 其他平台暂不支持流式，回退到一次性生成并作为单个 chunk 发送
+                    logger.warning(f"Platform {final_tts_platform} does not support streaming yet.")
+                    pass
+
+            return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
+
+        # ========== Step 3: TTS (Non-streaming) ==========
         audio_base64 = ""
         sample_rate = 24000
         
