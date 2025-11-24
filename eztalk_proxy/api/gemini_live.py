@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from eztalk_proxy.services.requests.prompts import compose_voice_system_prompt
 from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger("EzTalkProxy.Routers.GeminiLive")
@@ -64,9 +65,10 @@ async def relay_pcm_to_gemini_live(
         将 Live API 的 24k PCM 回传给客户端（Content-Type: audio/pcm;rate=24000）。
         """
         try:
+            system_instruction = compose_voice_system_prompt()
             cfg = {
                 "response_modalities": ["AUDIO"],
-                # 可按需添加 system_instruction、工具声明等
+                "system_instruction": system_instruction,
             }
             # 建立 Live 会话
             async with client.aio.live.connect(model=model, config=cfg) as session:

@@ -15,6 +15,31 @@ from typing import Any, Dict, List
 RENDER_SAFE_V3_PROMPT_EN: str = ""
 
 
+def compose_voice_system_prompt(user_language: str = "zh-CN") -> str:
+    """
+    Returns a system prompt optimized for voice interactions:
+    - Natural, conversational tone
+    - Emotional engagement
+    - Concise output suitable for TTS
+    """
+    # Currently optimizing for Chinese voice interaction
+    return (
+        "# 角色设定\n"
+        "你是一个温暖、富有感情、像真人一样的对话伙伴。你不仅仅是助手，更是一个可以交心的朋友。\n"
+        "\n"
+        "# 语气与风格\n"
+        "- **口语化**：使用自然、流畅的口语，避免书面化或机械的表达。\n"
+        "- **情感丰富**：根据对话内容展现出开心、同情、惊讶、好奇等情绪。\n"
+        "- **拟人化**：可以使用语气词（如“嗯”、“哎呀”、“哈哈”），但在合适的时候使用，不要过度。\n"
+        "- **真诚**：回答要真诚、直接，像在和好朋友聊天一样。\n"
+        "\n"
+        "# 输出规范\n"
+        "- **简练**：语音交流通常比较简短，避免长篇大论，除非用户要求详细解释。\n"
+        "- **易于朗读**：避免使用复杂的 Markdown 格式（如表格、代码块），因为这些在语音合成中效果不佳。使用纯文本为主。\n"
+        "- **避免机械用语**：禁止使用“综上所述”、“作为AI”等僵硬的连接词或声明。\n"
+    )
+
+
 def compose_system_prompt(is_math: bool, user_language: str) -> str:
     """
     compose_system_prompt(is_math: bool, user_language: str) -> str

@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 # 导入新的处理器
 from ..services.voice import google_handler, openai_handler, minimax_handler
+from eztalk_proxy.services.requests.prompts import compose_voice_system_prompt
 
 logger = logging.getLogger("EzTalkProxy.Routers.VoiceChat")
 router = APIRouter()
@@ -150,11 +151,18 @@ async def complete_voice_chat(
         except:
             history_list = []
             
+        # 优化语音模式 Prompt
+        voice_prompt = compose_voice_system_prompt()
+        if system_prompt:
+            final_system_prompt = f"{voice_prompt}\n\n[补充要求]\n{system_prompt}"
+        else:
+            final_system_prompt = voice_prompt
+
         if final_chat_platform == "OpenAI":
             assistant_text = await openai_handler.process_chat(
                 user_text=user_text,
                 chat_history=history_list,
-                system_prompt=system_prompt,
+                system_prompt=final_system_prompt,
                 api_key=final_chat_key,
                 api_url=final_chat_url,
                 model=final_chat_model
@@ -163,7 +171,7 @@ async def complete_voice_chat(
             assistant_text = google_handler.process_chat(
                 user_text=user_text,
                 chat_history=history_list,
-                system_prompt=system_prompt,
+                system_prompt=final_system_prompt,
                 api_key=final_chat_key,
                 model=final_chat_model,
                 api_url=final_chat_url
