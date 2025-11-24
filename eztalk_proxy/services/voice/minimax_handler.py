@@ -126,6 +126,9 @@ async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qing
         "model": "speech-2.6-hd",
         "text": text,
         "stream": True,
+        "stream_options": {
+            "exclude_aggregated_audio": True
+        },
         "voice_setting": {
             "voice_id": voice_id,
             "speed": 1.0,
