@@ -197,11 +197,17 @@ async def complete_voice_chat(
         # ========== Step 3: Streaming Response (If enabled) ==========
         if stream:
             async def stream_generator():
+                # 确定采样率 (默认24000，SiliconFlow默认32000)
+                stream_sample_rate = 24000
+                if final_tts_platform == "SiliconFlow":
+                    stream_sample_rate = 32000
+                
                 # 1. 发送元数据 (STT & Chat 结果)
                 yield orjson.dumps({
                     "type": "meta",
                     "user_text": user_text,
-                    "assistant_text": assistant_text
+                    "assistant_text": assistant_text,
+                    "sample_rate": stream_sample_rate
                 }) + b"\n"
                 
                 # 2. 发送音频流
