@@ -118,9 +118,15 @@ EzTalk 语音模式支持多平台混合调用（例如 Google STT + OpenAI Chat
 *   **API 地址**: Google 平台的 STT/LLM/TTS 均自动使用默认地址 `https://generativelanguage.googleapis.com`，**无需配置 API 地址**。
 *   **配置要求**: 仅需提供 Google API Key 和各环节的模型名称（如 `gemini-1.5-flash`）。
 
-### 其他平台 (OpenAI, Minimax 等)
+### 其他平台 (OpenAI, Minimax, SiliconFlow 等)
 *   **API 地址**: 必须完整填写 API 地址（包含协议和路径，例如 `https://api.openai.com/v1`）。
 *   **配置要求**: 必须提供 API Key、API 地址和模型名称，缺一不可。
+
+#### SiliconFlow (硅基流动) 语音识别
+*   **平台**: 在前端 STT 设置中选择 `SiliconFlow`。
+*   **API 地址**: 使用官方地址 `https://api.siliconflow.cn/v1/audio/transcriptions`。
+*   **模型**: 推荐使用 `FunAudioLLM/SenseVoiceSmall`。
+*   **Key**: 填入您的 SiliconFlow API Key。
 
 ## 📊 管理后台
 

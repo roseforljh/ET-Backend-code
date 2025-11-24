@@ -8,7 +8,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 
 # 导入新的处理器
-from ..services.voice import google_handler, openai_handler, minimax_handler
+from ..services.voice import google_handler, openai_handler, minimax_handler, siliconflow_handler
 from eztalk_proxy.services.requests.prompts import compose_voice_system_prompt
 
 logger = logging.getLogger("EzTalkProxy.Routers.VoiceChat")
@@ -77,6 +77,8 @@ async def complete_voice_chat(
     
     if not final_stt_model:
         raise HTTPException(status_code=400, detail="STT 模型名称未填写")
+    
+    # SiliconFlow 也需要 API 地址（虽然前端会固定传入，但后端校验逻辑保持一致）
     if final_stt_platform != "Google" and not final_stt_url:
         raise HTTPException(status_code=400, detail=f"{final_stt_platform} STT API 地址未填写")
 
@@ -131,6 +133,14 @@ async def complete_voice_chat(
                 api_key=final_stt_key,
                 api_url=final_stt_url,
                 model=final_stt_model
+            )
+        elif final_stt_platform == "SiliconFlow":
+            user_text = await siliconflow_handler.process_stt(
+                audio_bytes=audio_bytes,
+                api_key=final_stt_key,
+                api_url=final_stt_url,
+                model=final_stt_model,
+                mime_type=audio.content_type or "audio/wav"
             )
         else: # Google
             user_text = google_handler.process_stt(
@@ -242,11 +252,25 @@ async def complete_voice_chat(
 async def speech_to_text(
     audio: UploadFile = File(...),
     api_key: str = Form(...),
-    model: str = Form(...)
+    model: str = Form(...),
+    platform: str = Form("Google"),
+    api_url: str = Form(None)
 ):
-    # 默认使用 Google
     audio_bytes = await audio.read()
-    text = google_handler.process_stt(audio_bytes, audio.content_type or "audio/wav", api_key, model)
+    mime = audio.content_type or "audio/wav"
+    
+    if platform == "OpenAI":
+        if not api_url:
+            raise HTTPException(400, "OpenAI STT 需要提供 api_url")
+        text = await openai_handler.process_stt(audio_bytes, api_key, api_url, model)
+    elif platform == "SiliconFlow":
+        if not api_url:
+            raise HTTPException(400, "SiliconFlow STT 需要提供 api_url")
+        text = await siliconflow_handler.process_stt(audio_bytes, api_key, api_url, model, mime)
+    else:
+        # 默认 Google
+        text = google_handler.process_stt(audio_bytes, mime, api_key, model, api_url)
+        
     return {"text": text}
 
 @router.post("/tts", summary="语音合成（TTS）", tags=["Voice Chat"])
