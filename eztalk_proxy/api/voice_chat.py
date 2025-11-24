@@ -46,7 +46,7 @@ async def complete_voice_chat(
     system_prompt: str = Form(""),
     
     # --- 3. TTS 配置 ---
-    voice_platform: str = Form("Gemini", description="TTS 平台: Gemini / Minimax"),
+    voice_platform: str = Form("Gemini", description="TTS 平台: Gemini / Minimax / SiliconFlow"),
     voice_name: str = Form(DEFAULT_VOICE_NAME),
     tts_api_key: str = Form(None),
     tts_api_url: str = Form(None), # Minimax 需要
@@ -111,6 +111,9 @@ async def complete_voice_chat(
     
     if final_tts_platform == "Minimax" and not final_tts_url:
         raise HTTPException(status_code=400, detail="Minimax TTS API 地址未填写")
+
+    if final_tts_platform == "SiliconFlow" and not final_tts_key:
+        raise HTTPException(status_code=400, detail="SiliconFlow TTS API Key 未填写")
 
     logger.info(f"Voice Chat Request:")
     logger.info(f"  STT: {final_stt_platform} ({final_stt_model})")
@@ -204,6 +207,19 @@ async def complete_voice_chat(
                 )
                 if wav_data:
                     audio_base64 = base64.b64encode(wav_data).decode('utf-8')
+                    sample_rate = sr
+            elif final_tts_platform == "SiliconFlow":
+                # process_tts now returns PCM data
+                pcm_data, sr = await siliconflow_handler.process_tts(
+                    text=assistant_text,
+                    api_key=final_tts_key,
+                    api_url=final_tts_url,
+                    model=tts_model,
+                    voice=voice_name
+                )
+                if pcm_data:
+                    # 前端直接使用 AudioTrack 播放 PCM，不需要 WAV 头
+                    audio_base64 = base64.b64encode(pcm_data).decode('utf-8')
                     sample_rate = sr
             else: # Gemini
                 # Gemini TTS 需要 Google Key

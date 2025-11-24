@@ -57,3 +57,54 @@ async def process_stt(audio_bytes: bytes, api_key: str, api_url: str, model: str
         except Exception as e:
             logger.exception("SiliconFlow STT error")
             raise HTTPException(status_code=500, detail=f"硅基流动语音识别失败: {str(e)}")
+async def process_tts(text: str, api_key: str, api_url: str, model: str, voice: str, response_format: str = "pcm", sample_rate: int = 32000) -> tuple[bytes, int]:
+    """
+    调用硅基流动 (SiliconFlow) 的 TTS 接口进行语音合成
+    """
+    if not api_key:
+        raise HTTPException(status_code=400, detail="SiliconFlow API Key 未提供")
+    
+    if not api_url:
+        api_url = "https://api.siliconflow.cn/v1/audio/speech"
+        
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    # 处理 voice 参数，如果未包含模型前缀则自动添加
+    # 例如 model="fishaudio/fish-speech-1.5", voice="alex" -> "fishaudio/fish-speech-1.5:alex"
+    final_voice = voice
+    if model and voice and ":" not in voice:
+        final_voice = f"{model}:{voice}"
+    
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": final_voice,
+        "response_format": response_format,
+        "sample_rate": sample_rate,
+        "stream": False,
+        "gain": 0
+    }
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            resp = await client.post(api_url, headers=headers, json=payload)
+            
+            if resp.status_code != 200:
+                error_msg = resp.text
+                try:
+                    err_json = resp.json()
+                    if "message" in err_json:
+                        error_msg = err_json["message"]
+                except:
+                    pass
+                logger.error(f"SiliconFlow TTS failed: {resp.status_code} - {error_msg}")
+                raise Exception(f"API Error ({resp.status_code}): {error_msg}")
+                
+            return resp.content, sample_rate
+            
+        except Exception as e:
+            logger.exception("SiliconFlow TTS error")
+            raise HTTPException(status_code=500, detail=f"硅基流动语音合成失败: {str(e)}")
