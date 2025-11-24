@@ -4,6 +4,7 @@ import httpx
 import wave
 import io
 from typing import Optional
+from eztalk_proxy.core.http_client import get_http_client
 
 logger = logging.getLogger("EzTalkProxy.Services.Voice.Minimax")
 
@@ -65,36 +66,37 @@ async def synthesize_minimax_t2a(text: str, voice_id: str = "male-qn-qingse", ap
     }
     
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(url, headers=headers, json=payload)
+        # 使用全局客户端
+        client = get_http_client()
+        response = await client.post(url, headers=headers, json=payload, timeout=15.0)
             
-            if response.status_code != 200:
-                logger.error(f"Minimax T2A failed: {response.status_code} - {response.text}")
-                return None, 24000
-                
-            resp_json = response.json()
-            base_resp = resp_json.get("base_resp", {})
-            if base_resp.get("status_code") != 0:
-                logger.error(f"Minimax T2A error: {base_resp.get('status_msg')}")
-                return None, 24000
-                
-            data = resp_json.get("data", {})
-            audio_hex = data.get("audio")
-            if not audio_hex:
-                logger.error("Minimax T2A returned no audio data")
-                return None, 24000
-                
-            # Hex 转 PCM bytes
-            pcm_bytes = bytes.fromhex(audio_hex)
+        if response.status_code != 200:
+            logger.error(f"Minimax T2A failed: {response.status_code} - {response.text}")
+            return None, 24000
             
-            # 获取实际采样率
-            extra_info = resp_json.get("extra_info", {})
-            sample_rate = extra_info.get("audio_sample_rate", 24000)
+        resp_json = response.json()
+        base_resp = resp_json.get("base_resp", {})
+        if base_resp.get("status_code") != 0:
+            logger.error(f"Minimax T2A error: {base_resp.get('status_msg')}")
+            return None, 24000
             
-            # 包装成 WAV
-            wav_bytes = wave_file_bytes(pcm_bytes, rate=sample_rate)
+        data = resp_json.get("data", {})
+        audio_hex = data.get("audio")
+        if not audio_hex:
+            logger.error("Minimax T2A returned no audio data")
+            return None, 24000
             
-            return wav_bytes, sample_rate
+        # Hex 转 PCM bytes
+        pcm_bytes = bytes.fromhex(audio_hex)
+        
+        # 获取实际采样率
+        extra_info = resp_json.get("extra_info", {})
+        sample_rate = extra_info.get("audio_sample_rate", 24000)
+        
+        # 包装成 WAV
+        wav_bytes = wave_file_bytes(pcm_bytes, rate=sample_rate)
+        
+        return wav_bytes, sample_rate
             
     except Exception as e:
         logger.exception(f"Minimax T2A exception: {e}")
@@ -148,51 +150,52 @@ async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qing
     }
     
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as response:
-                if response.status_code != 200:
-                    logger.error(f"Minimax Stream T2A failed: {response.status_code}")
-                    # 读取错误信息
-                    error_body = await response.aread()
-                    logger.error(f"Error body: {error_body.decode('utf-8', errors='ignore')}")
-                    return
+        # 使用全局客户端进行流式请求
+        client = get_http_client()
+        async with client.stream("POST", url, headers=headers, json=payload, timeout=60.0) as response:
+            if response.status_code != 200:
+                logger.error(f"Minimax Stream T2A failed: {response.status_code}")
+                # 读取错误信息
+                error_body = await response.aread()
+                logger.error(f"Error body: {error_body.decode('utf-8', errors='ignore')}")
+                return
 
-                chunk_count = 0
-                total_bytes = 0
-                
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
+            chunk_count = 0
+            total_bytes = 0
+            
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                    
+                if line.startswith("data: "):
+                    json_str = line[6:] # 去掉 "data: " 前缀
+                    try:
+                        import json
+                        data_obj = json.loads(json_str)
                         
-                    if line.startswith("data: "):
-                        json_str = line[6:] # 去掉 "data: " 前缀
-                        try:
-                            import json
-                            data_obj = json.loads(json_str)
+                        # 检查是否有错误
+                        base_resp = data_obj.get("base_resp", {})
+                        if base_resp.get("status_code") != 0:
+                            logger.error(f"Minimax Stream error: {base_resp.get('status_msg')}")
+                            continue
                             
-                            # 检查是否有错误
-                            base_resp = data_obj.get("base_resp", {})
-                            if base_resp.get("status_code") != 0:
-                                logger.error(f"Minimax Stream error: {base_resp.get('status_msg')}")
-                                continue
-                                
-                            # 提取音频数据
-                            inner_data = data_obj.get("data", {})
-                            audio_hex = inner_data.get("audio")
+                        # 提取音频数据
+                        inner_data = data_obj.get("data", {})
+                        audio_hex = inner_data.get("audio")
+                        
+                        if audio_hex:
+                            pcm_chunk = bytes.fromhex(audio_hex)
+                            chunk_count += 1
+                            total_bytes += len(pcm_chunk)
+                            yield pcm_chunk
                             
-                            if audio_hex:
-                                pcm_chunk = bytes.fromhex(audio_hex)
-                                chunk_count += 1
-                                total_bytes += len(pcm_chunk)
-                                yield pcm_chunk
-                                
-                            # 检查是否结束
-                            if inner_data.get("status") == 2:
-                                logger.info(f"Minimax Stream completed. Chunks: {chunk_count}, Total bytes: {total_bytes}")
-                                break
-                                
-                        except Exception as e:
-                            logger.warning(f"Failed to parse SSE line: {line[:50]}... Error: {e}")
+                        # 检查是否结束
+                        if inner_data.get("status") == 2:
+                            logger.info(f"Minimax Stream completed. Chunks: {chunk_count}, Total bytes: {total_bytes}")
+                            break
+                            
+                    except Exception as e:
+                        logger.warning(f"Failed to parse SSE line: {line[:50]}... Error: {e}")
                             
     except Exception as e:
         logger.exception(f"Minimax Stream T2A exception: {e}")

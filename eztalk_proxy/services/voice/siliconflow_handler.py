@@ -1,6 +1,7 @@
 import logging
 import httpx
 from fastapi import HTTPException
+from eztalk_proxy.core.http_client import get_http_client
 
 logger = logging.getLogger("EzTalkProxy.Services.Voice.SiliconFlow")
 
@@ -22,41 +23,42 @@ async def process_stt(audio_bytes: bytes, api_key: str, api_url: str, model: str
     ext = mime_type.split('/')[-1] if '/' in mime_type else 'wav'
     filename = f"audio.{ext}"
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        logger.info(f"Speech-to-Text using SiliconFlow model '{model}' at {api_url}")
+    # 使用全局客户端
+    client = get_http_client()
+    logger.info(f"Speech-to-Text using SiliconFlow model '{model}' at {api_url}")
+    
+    # 构造 multipart/form-data
+    files = {'file': (filename, audio_bytes, mime_type)}
+    data = {'model': model}
+    
+    try:
+        resp = await client.post(api_url, headers=headers, files=files, data=data, timeout=30.0)
+            
+        if resp.status_code != 200:
+            error_msg = resp.text
+            logger.error(f"SiliconFlow STT failed: {resp.status_code} - {error_msg}")
+            # 尝试提取更具体的错误信息
+            try:
+                err_json = resp.json()
+                if "message" in err_json:
+                    error_msg = err_json["message"]
+            except:
+                pass
+            raise Exception(f"API Error ({resp.status_code}): {error_msg}")
         
-        # 构造 multipart/form-data
-        files = {'file': (filename, audio_bytes, mime_type)}
-        data = {'model': model}
+        result = resp.json()
+        text = result.get("text", "").strip()
         
-        try:
-            resp = await client.post(api_url, headers=headers, files=files, data=data)
+        if not text:
+            logger.warning("SiliconFlow STT returned empty text")
+        else:
+            logger.info(f"STT Result: {text[:100]}...")
             
-            if resp.status_code != 200:
-                error_msg = resp.text
-                logger.error(f"SiliconFlow STT failed: {resp.status_code} - {error_msg}")
-                # 尝试提取更具体的错误信息
-                try:
-                    err_json = resp.json()
-                    if "message" in err_json:
-                        error_msg = err_json["message"]
-                except:
-                    pass
-                raise Exception(f"API Error ({resp.status_code}): {error_msg}")
-            
-            result = resp.json()
-            text = result.get("text", "").strip()
-            
-            if not text:
-                logger.warning("SiliconFlow STT returned empty text")
-            else:
-                logger.info(f"STT Result: {text[:100]}...")
-                
-            return text
-            
-        except Exception as e:
-            logger.exception("SiliconFlow STT error")
-            raise HTTPException(status_code=500, detail=f"硅基流动语音识别失败: {str(e)}")
+        return text
+        
+    except Exception as e:
+        logger.exception("SiliconFlow STT error")
+        raise HTTPException(status_code=500, detail=f"硅基流动语音识别失败: {str(e)}")
 async def process_tts(text: str, api_key: str, api_url: str, model: str, voice: str, response_format: str = "pcm", sample_rate: int = 32000) -> tuple[bytes, int]:
     """
     调用硅基流动 (SiliconFlow) 的 TTS 接口进行语音合成
@@ -88,26 +90,27 @@ async def process_tts(text: str, api_key: str, api_url: str, model: str, voice: 
         "gain": 0
     }
     
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            resp = await client.post(api_url, headers=headers, json=payload)
+    # 使用全局客户端
+    client = get_http_client()
+    try:
+        resp = await client.post(api_url, headers=headers, json=payload, timeout=60.0)
             
-            if resp.status_code != 200:
-                error_msg = resp.text
-                try:
-                    err_json = resp.json()
-                    if "message" in err_json:
-                        error_msg = err_json["message"]
-                except:
-                    pass
-                logger.error(f"SiliconFlow TTS failed: {resp.status_code} - {error_msg}")
-                raise Exception(f"API Error ({resp.status_code}): {error_msg}")
-                
-            return resp.content, sample_rate
+        if resp.status_code != 200:
+            error_msg = resp.text
+            try:
+                err_json = resp.json()
+                if "message" in err_json:
+                    error_msg = err_json["message"]
+            except:
+                pass
+            logger.error(f"SiliconFlow TTS failed: {resp.status_code} - {error_msg}")
+            raise Exception(f"API Error ({resp.status_code}): {error_msg}")
             
-        except Exception as e:
-            logger.exception("SiliconFlow TTS error")
-            raise HTTPException(status_code=500, detail=f"硅基流动语音合成失败: {str(e)}")
+        return resp.content, sample_rate
+        
+    except Exception as e:
+        logger.exception("SiliconFlow TTS error")
+        raise HTTPException(status_code=500, detail=f"硅基流动语音合成失败: {str(e)}")
 
 async def process_tts_stream(text: str, api_key: str, api_url: str, model: str, voice: str, response_format: str = "pcm", sample_rate: int = 32000):
     """
@@ -144,22 +147,23 @@ async def process_tts_stream(text: str, api_key: str, api_url: str, model: str, 
     logger.info(f"Starting SiliconFlow Stream TTS: {model} ({final_voice})")
     
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream("POST", api_url, headers=headers, json=payload) as response:
-                if response.status_code != 200:
-                    logger.error(f"SiliconFlow Stream TTS failed: {response.status_code}")
-                    return
+        # 使用全局客户端进行流式请求
+        client = get_http_client()
+        async with client.stream("POST", api_url, headers=headers, json=payload, timeout=60.0) as response:
+            if response.status_code != 200:
+                logger.error(f"SiliconFlow Stream TTS failed: {response.status_code}")
+                return
 
-                chunk_count = 0
-                total_bytes = 0
-                
-                async for chunk in response.aiter_bytes():
-                    if chunk:
-                        chunk_count += 1
-                        total_bytes += len(chunk)
-                        yield chunk
-                        
-                logger.info(f"SiliconFlow Stream TTS completed. Chunks: {chunk_count}, Total bytes: {total_bytes}")
+            chunk_count = 0
+            total_bytes = 0
+            
+            async for chunk in response.aiter_bytes():
+                if chunk:
+                    chunk_count += 1
+                    total_bytes += len(chunk)
+                    yield chunk
+                    
+            logger.info(f"SiliconFlow Stream TTS completed. Chunks: {chunk_count}, Total bytes: {total_bytes}")
                         
     except Exception as e:
         logger.exception(f"SiliconFlow Stream TTS exception: {e}")
