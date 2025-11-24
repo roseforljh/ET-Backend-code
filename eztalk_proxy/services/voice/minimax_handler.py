@@ -122,6 +122,8 @@ async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qing
         "Content-Type": "application/json"
     }
     
+    logger.info(f"Minimax Stream T2A Request URL: {url}")
+    
     payload = {
         "model": "speech-2.6-hd",
         "text": text,
@@ -155,6 +157,9 @@ async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qing
                     logger.error(f"Error body: {error_body.decode('utf-8', errors='ignore')}")
                     return
 
+                chunk_count = 0
+                total_bytes = 0
+                
                 async for line in response.aiter_lines():
                     if not line:
                         continue
@@ -177,10 +182,13 @@ async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qing
                             
                             if audio_hex:
                                 pcm_chunk = bytes.fromhex(audio_hex)
+                                chunk_count += 1
+                                total_bytes += len(pcm_chunk)
                                 yield pcm_chunk
                                 
                             # 检查是否结束
                             if inner_data.get("status") == 2:
+                                logger.info(f"Minimax Stream completed. Chunks: {chunk_count}, Total bytes: {total_bytes}")
                                 break
                                 
                         except Exception as e:

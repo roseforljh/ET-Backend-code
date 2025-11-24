@@ -150,9 +150,16 @@ async def process_tts_stream(text: str, api_key: str, api_url: str, model: str, 
                     logger.error(f"SiliconFlow Stream TTS failed: {response.status_code}")
                     return
 
+                chunk_count = 0
+                total_bytes = 0
+                
                 async for chunk in response.aiter_bytes():
                     if chunk:
+                        chunk_count += 1
+                        total_bytes += len(chunk)
                         yield chunk
+                        
+                logger.info(f"SiliconFlow Stream TTS completed. Chunks: {chunk_count}, Total bytes: {total_bytes}")
                         
     except Exception as e:
         logger.exception(f"SiliconFlow Stream TTS exception: {e}")
