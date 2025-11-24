@@ -18,17 +18,25 @@ def check_genai_available():
             detail="google-genai SDK 不可用，请在后端安装：pip install google-genai"
         )
 
-def get_client(api_key: str):
+def get_client(api_key: str, api_url: str = None):
     check_genai_available()
     if not api_key:
-        raise HTTPException(status_code=400, detail="Google API Key 未提供")
-    return genai.Client(api_key=api_key)
+        # raise HTTPException(status_code=400, detail="Google API Key 未提供")
+        pass # 允许空 Key，某些中转可能不需要 Key
+        
+    client_params = {"api_key": api_key}
+    if api_url:
+        # Pydantic 校验严格，HttpOptions 字段通常为 base_url (或尝试兼容 api_endpoint 如果版本允许，但报错说 forbidden)
+        # 尝试使用 base_url 替代 api_endpoint
+        client_params["http_options"] = {"base_url": api_url}
+        
+    return genai.Client(**client_params)
 
-def process_stt(audio_bytes: bytes, mime_type: str, api_key: str, model: str) -> str:
+def process_stt(audio_bytes: bytes, mime_type: str, api_key: str, model: str, api_url: str = None) -> str:
     """
     Google Gemini STT
     """
-    client = get_client(api_key)
+    client = get_client(api_key, api_url)
     logger.info(f"Speech-to-Text using Gemini {model}")
     
     try:
@@ -49,11 +57,11 @@ def process_stt(audio_bytes: bytes, mime_type: str, api_key: str, model: str) ->
         logger.exception("Gemini STT error")
         raise HTTPException(status_code=500, detail=f"语音识别失败: {str(e)}")
 
-def process_chat(user_text: str, chat_history: list, system_prompt: str, api_key: str, model: str) -> str:
+def process_chat(user_text: str, chat_history: list, system_prompt: str, api_key: str, model: str, api_url: str = None) -> str:
     """
     Google Gemini Chat
     """
-    client = get_client(api_key)
+    client = get_client(api_key, api_url)
     logger.info(f"Generate response using Gemini {model}")
     
     prompt_parts = []
@@ -84,11 +92,11 @@ def process_chat(user_text: str, chat_history: list, system_prompt: str, api_key
         logger.exception("Gemini Chat error")
         raise HTTPException(status_code=500, detail=f"对话生成失败: {str(e)}")
 
-def process_tts(text: str, api_key: str, voice_name: str, model: str) -> bytes:
+def process_tts(text: str, api_key: str, voice_name: str, model: str, api_url: str = None) -> bytes:
     """
     Google Gemini TTS
     """
-    client = get_client(api_key)
+    client = get_client(api_key, api_url)
     logger.info(f"Text-to-Speech using Gemini {model} (Voice: {voice_name})")
     
     # 如果回复太长，截断避免TTS超时（保留前200字符）

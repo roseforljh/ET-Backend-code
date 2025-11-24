@@ -136,7 +136,8 @@ async def complete_voice_chat(
                 audio_bytes=audio_bytes,
                 mime_type=audio.content_type or "audio/wav",
                 api_key=final_stt_key,
-                model=final_stt_model
+                model=final_stt_model,
+                api_url=final_stt_url
             )
             
         if not user_text:
@@ -164,7 +165,8 @@ async def complete_voice_chat(
                 chat_history=history_list,
                 system_prompt=system_prompt,
                 api_key=final_chat_key,
-                model=final_chat_model
+                model=final_chat_model,
+                api_url=final_chat_url
             )
             
         if not assistant_text:
@@ -195,7 +197,8 @@ async def complete_voice_chat(
                         text=assistant_text,
                         api_key=final_tts_key,
                         voice_name=voice_name,
-                        model=tts_model
+                        model=tts_model,
+                        api_url=final_tts_url
                     )
                     if pcm_data:
                         wav_data = wave_file_bytes(pcm_data)
