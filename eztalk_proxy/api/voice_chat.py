@@ -224,6 +224,26 @@ async def complete_voice_chat(
                             "type": "error",
                             "message": str(e)
                         }) + b"\n"
+                elif final_tts_platform == "SiliconFlow":
+                    try:
+                        async for pcm_chunk in siliconflow_handler.process_tts_stream(
+                            text=assistant_text,
+                            api_key=final_tts_key,
+                            api_url=final_tts_url,
+                            model=tts_model,
+                            voice=voice_name
+                        ):
+                            if pcm_chunk:
+                                yield orjson.dumps({
+                                    "type": "audio",
+                                    "data": base64.b64encode(pcm_chunk).decode('utf-8')
+                                }) + b"\n"
+                    except Exception as e:
+                        logger.error(f"SiliconFlow streaming failed: {e}")
+                        yield orjson.dumps({
+                            "type": "error",
+                            "message": str(e)
+                        }) + b"\n"
                 else:
                     # 其他平台暂不支持流式，回退到一次性生成并作为单个 chunk 发送
                     logger.warning(f"Platform {final_tts_platform} does not support streaming yet.")

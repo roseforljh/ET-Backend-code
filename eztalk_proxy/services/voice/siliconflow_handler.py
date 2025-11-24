@@ -108,3 +108,51 @@ async def process_tts(text: str, api_key: str, api_url: str, model: str, voice: 
         except Exception as e:
             logger.exception("SiliconFlow TTS error")
             raise HTTPException(status_code=500, detail=f"硅基流动语音合成失败: {str(e)}")
+
+async def process_tts_stream(text: str, api_key: str, api_url: str, model: str, voice: str, response_format: str = "pcm", sample_rate: int = 32000):
+    """
+    调用硅基流动 (SiliconFlow) 的 TTS 接口进行流式语音合成
+    Yields: bytes (chunk)
+    """
+    if not api_key:
+        # raise HTTPException... yield 不能直接 raise HTTP Exception，记录日志并返回
+        logger.error("SiliconFlow API Key missing for stream")
+        return
+    
+    if not api_url:
+        api_url = "https://api.siliconflow.cn/v1/audio/speech"
+        
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    final_voice = voice
+    if model and voice and ":" not in voice:
+        final_voice = f"{model}:{voice}"
+    
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": final_voice,
+        "response_format": response_format,
+        "sample_rate": sample_rate,
+        "stream": True, # 开启流式
+        "gain": 0
+    }
+    
+    logger.info(f"Starting SiliconFlow Stream TTS: {model} ({final_voice})")
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream("POST", api_url, headers=headers, json=payload) as response:
+                if response.status_code != 200:
+                    logger.error(f"SiliconFlow Stream TTS failed: {response.status_code}")
+                    return
+
+                async for chunk in response.aiter_bytes():
+                    if chunk:
+                        yield chunk
+                        
+    except Exception as e:
+        logger.exception(f"SiliconFlow Stream TTS exception: {e}")
