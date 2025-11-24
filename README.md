@@ -29,6 +29,7 @@ EzTalk Proxy 是一个高性能、安全的 FastAPI 后端服务，专为 EzTalk
     *   **管理后台**: 内置可视化管理面板，监控系统状态。
 *   **扩展功能**:
     *   **Gemini Live**: 支持实时语音对话中转。
+    *   **语音模式**: 支持 Google, OpenAI, Minimax 等多平台语音对话（STT/LLM/TTS）。
     *   **图像生成**: 集成多种绘图模型接口。
     *   **联网搜索**: 支持集成 Google Search 等搜索服务。
 *   **可观测性**: 详细的访问日志记录和统计图表。
@@ -108,6 +109,18 @@ docker-compose up -d
 | `SIGNATURE_SECRET_KEYS` | 签名密钥列表(逗号分隔) | - |
 | `MAX_CONNECTIONS` | 最大并发连接数 | `100` |
 | `API_TIMEOUT` | API 请求超时时间(秒) | `120` |
+
+## 🎤 语音模式配置说明
+
+EzTalk 语音模式支持多平台混合调用（例如 Google STT + OpenAI Chat + Minimax TTS）。
+
+### Google 平台 (Gemini)
+*   **API 地址**: Google 平台的 STT/LLM/TTS 均自动使用默认地址 `https://generativelanguage.googleapis.com`，**无需配置 API 地址**。
+*   **配置要求**: 仅需提供 Google API Key 和各环节的模型名称（如 `gemini-1.5-flash`）。
+
+### 其他平台 (OpenAI, Minimax 等)
+*   **API 地址**: 必须完整填写 API 地址（包含协议和路径，例如 `https://api.openai.com/v1`）。
+*   **配置要求**: 必须提供 API Key、API 地址和模型名称，缺一不可。
 
 ## 📊 管理后台
 
