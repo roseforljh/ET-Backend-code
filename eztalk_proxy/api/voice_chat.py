@@ -272,6 +272,19 @@ async def complete_voice_chat(
                 if wav_data:
                     audio_base64 = base64.b64encode(wav_data).decode('utf-8')
                     sample_rate = sr
+            elif final_tts_platform == "OpenAI":
+                wav_data = await openai_handler.process_tts(
+                    text=assistant_text,
+                    api_key=final_tts_key,
+                    voice_name=voice_name,
+                    model=tts_model,
+                    api_url=final_tts_url
+                )
+                if wav_data:
+                    audio_base64 = base64.b64encode(wav_data).decode('utf-8')
+                    # OpenAI TTS doesn't return sample rate, but typically it's 24000 or based on format
+                    # Since we request 'wav', it includes header. Front-end might need to parse or we assume standard.
+                    sample_rate = 24000
             elif final_tts_platform == "SiliconFlow":
                 # process_tts now returns PCM data
                 pcm_data, sr = await siliconflow_handler.process_tts(

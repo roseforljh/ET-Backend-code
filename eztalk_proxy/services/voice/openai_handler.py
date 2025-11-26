@@ -20,14 +20,20 @@ async def process_stt(audio_bytes: bytes, api_key: str, api_url: str = None, mod
     
     # 使用全局客户端
     client = get_http_client()
-    logger.info(f"Speech-to-Text using OpenAI Whisper at {api_url}")
+    
+    # 智能补全 URL: 如果未包含 /transcriptions，则自动追加 /audio/transcriptions
+    target_url = api_url
+    if not target_url.endswith("/transcriptions"):
+        target_url = f"{target_url.rstrip('/')}/audio/transcriptions"
+        
+    logger.info(f"Speech-to-Text using OpenAI Whisper at {target_url}")
     
     # OpenAI 需要文件名
     files = {'file': ('audio.wav', audio_bytes, 'audio/wav')}
     data = {'model': model}
     
     try:
-        stt_resp = await client.post(api_url, headers=headers, files=files, data=data, timeout=30.0)
+        stt_resp = await client.post(target_url, headers=headers, files=files, data=data, timeout=30.0)
         if stt_resp.status_code != 200:
             logger.error(f"OpenAI STT failed: {stt_resp.text}")
             raise Exception(f"OpenAI STT failed: {stt_resp.status_code}")
@@ -56,7 +62,12 @@ async def process_chat(
     if not api_url:
         raise HTTPException(status_code=400, detail="OpenAI API 地址未提供")
         
-    logger.info(f"Generate response using OpenAI {model} at {api_url}")
+    # 智能补全 URL: 如果未包含 /completions，则自动追加 /chat/completions
+    target_url = api_url
+    if not target_url.endswith("/completions"):
+        target_url = f"{target_url.rstrip('/')}/chat/completions"
+
+    logger.info(f"Generate response using OpenAI {model} at {target_url}")
     
     messages = []
     if system_prompt:
@@ -79,7 +90,7 @@ async def process_chat(
     client = get_http_client()
     try:
         chat_resp = await client.post(
-            api_url,
+            target_url,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json=chat_payload,
             timeout=30.0
@@ -93,4 +104,61 @@ async def process_chat(
         return assistant_text
     except Exception as e:
         logger.exception("OpenAI Chat error")
+async def process_tts(
+    text: str,
+    api_key: str,
+    voice_name: str = "alloy",
+    model: str = "tts-1",
+    api_url: str = None
+) -> bytes:
+    """
+    OpenAI Text-to-Speech
+    """
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OpenAI API Key 未提供")
+        
+    if not api_url:
+        raise HTTPException(status_code=400, detail="OpenAI API 地址未提供")
+        
+    logger.info(f"Text-to-Speech using OpenAI {model} ({voice_name}) at {api_url}")
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice_name,
+        "response_format": "wav"  # Explicitly request WAV
+    }
+    
+    client = get_http_client()
+    try:
+        # OpenAI TTS endpoint is usually /v1/audio/speech
+        # We assume api_url is the full endpoint or base url. 
+        # If the user provides base url (e.g. https://api.openai.com/v1), we might need to append /audio/speech if not present.
+        # However, for consistency with other handlers, we expect the full URL or handle it here.
+        # Given existing patterns, let's assume api_url is the full endpoint if it ends with /speech, otherwise append it.
+        
+        target_url = api_url
+        if not target_url.endswith("/speech"):
+             target_url = f"{target_url.rstrip('/')}/audio/speech"
+             
+        resp = await client.post(
+            target_url,
+            headers=headers,
+            json=payload,
+            timeout=60.0
+        )
+        
+        if resp.status_code != 200:
+            logger.error(f"OpenAI TTS failed: {resp.text}")
+            raise Exception(f"OpenAI TTS failed: {resp.status_code} - {resp.text}")
+            
+        return resp.content
+    except Exception as e:
+        logger.exception("OpenAI TTS error")
+        raise HTTPException(status_code=500, detail=f"语音合成失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"对话生成失败: {str(e)}")
