@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 # 导入新的处理器
 from ..services.voice import google_handler, openai_handler, minimax_handler, siliconflow_handler
+from ..services.voice_streaming import VoiceStreamProcessor
 from eztalk_proxy.services.requests.prompts import compose_voice_system_prompt
 
 logger = logging.getLogger("EzTalkProxy.Routers.VoiceChat")
@@ -130,7 +131,50 @@ async def complete_voice_chat(
         user_text = ""
         assistant_text = ""
         
-        # ========== Step 1: STT ==========
+        # 解析历史记录
+        try:
+            history_list = json.loads(chat_history)
+        except:
+            history_list = []
+            
+        # 优化语音模式 Prompt
+        voice_prompt = compose_voice_system_prompt()
+        if system_prompt:
+            final_system_prompt = f"{voice_prompt}\n\n[补充要求]\n{system_prompt}"
+        else:
+            final_system_prompt = voice_prompt
+
+        # 如果开启流式，直接进入流式处理，跳过传统的 STT/Chat 等待
+        if stream:
+             processor = VoiceStreamProcessor(
+                stt_config={
+                    "platform": final_stt_platform,
+                    "api_key": final_stt_key,
+                    "api_url": final_stt_url,
+                    "model": final_stt_model
+                },
+                chat_config={
+                    "platform": final_chat_platform,
+                    "api_key": final_chat_key,
+                    "api_url": final_chat_url,
+                    "model": final_chat_model,
+                    "history": history_list,
+                    "system_prompt": final_system_prompt
+                },
+                tts_config={
+                    "platform": final_tts_platform,
+                    "api_key": final_tts_key,
+                    "api_url": final_tts_url,
+                    "model": tts_model,
+                    "voice_name": voice_name
+                }
+            )
+             return StreamingResponse(
+                processor.process(audio_bytes, audio.content_type or "audio/wav"),
+                media_type="application/x-ndjson"
+            )
+
+        # ========== Step 1: STT (Non-Streaming) ==========
         if final_stt_platform == "OpenAI":
             user_text = await openai_handler.process_stt(
                 audio_bytes=audio_bytes,
@@ -158,20 +202,7 @@ async def complete_voice_chat(
         if not user_text:
             raise HTTPException(status_code=400, detail="无法识别音频内容")
             
-        # ========== Step 2: Chat ==========
-        # 解析历史记录
-        try:
-            history_list = json.loads(chat_history)
-        except:
-            history_list = []
-            
-        # 优化语音模式 Prompt
-        voice_prompt = compose_voice_system_prompt()
-        if system_prompt:
-            final_system_prompt = f"{voice_prompt}\n\n[补充要求]\n{system_prompt}"
-        else:
-            final_system_prompt = voice_prompt
-
+        # ========== Step 2: Chat (Non-Streaming) ==========
         if final_chat_platform == "OpenAI":
             assistant_text = await openai_handler.process_chat(
                 user_text=user_text,
@@ -196,66 +227,40 @@ async def complete_voice_chat(
             
         # ========== Step 3: Streaming Response (If enabled) ==========
         if stream:
-            async def stream_generator():
-                # 确定采样率 (默认24000，SiliconFlow默认32000)
-                stream_sample_rate = 24000
-                if final_tts_platform == "SiliconFlow":
-                    stream_sample_rate = 32000
-                
-                # 1. 发送元数据 (STT & Chat 结果)
-                yield orjson.dumps({
-                    "type": "meta",
-                    "user_text": user_text,
-                    "assistant_text": assistant_text,
-                    "sample_rate": stream_sample_rate
-                }) + b"\n"
-                
-                # 2. 发送音频流
-                if final_tts_platform == "Minimax":
-                    try:
-                        async for pcm_chunk in minimax_handler.synthesize_minimax_t2a_stream(
-                            text=assistant_text,
-                            voice_id=voice_name,
-                            api_url=final_tts_url,
-                            api_key=final_tts_key
-                        ):
-                            if pcm_chunk:
-                                yield orjson.dumps({
-                                    "type": "audio",
-                                    "data": base64.b64encode(pcm_chunk).decode('utf-8')
-                                }) + b"\n"
-                    except Exception as e:
-                        logger.error(f"Minimax streaming failed: {e}")
-                        yield orjson.dumps({
-                            "type": "error",
-                            "message": str(e)
-                        }) + b"\n"
-                elif final_tts_platform == "SiliconFlow":
-                    try:
-                        async for pcm_chunk in siliconflow_handler.process_tts_stream(
-                            text=assistant_text,
-                            api_key=final_tts_key,
-                            api_url=final_tts_url,
-                            model=tts_model,
-                            voice=voice_name
-                        ):
-                            if pcm_chunk:
-                                yield orjson.dumps({
-                                    "type": "audio",
-                                    "data": base64.b64encode(pcm_chunk).decode('utf-8')
-                                }) + b"\n"
-                    except Exception as e:
-                        logger.error(f"SiliconFlow streaming failed: {e}")
-                        yield orjson.dumps({
-                            "type": "error",
-                            "message": str(e)
-                        }) + b"\n"
-                else:
-                    # 其他平台暂不支持流式，回退到一次性生成并作为单个 chunk 发送
-                    logger.warning(f"Platform {final_tts_platform} does not support streaming yet.")
-                    pass
-
-            return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
+            # 使用新的流式处理器
+            processor = VoiceStreamProcessor(
+                stt_config={
+                    "platform": final_stt_platform,
+                    "api_key": final_stt_key,
+                    "api_url": final_stt_url,
+                    "model": final_stt_model
+                },
+                chat_config={
+                    "platform": final_chat_platform,
+                    "api_key": final_chat_key,
+                    "api_url": final_chat_url,
+                    "model": final_chat_model,
+                    "history": history_list,
+                    "system_prompt": final_system_prompt
+                },
+                tts_config={
+                    "platform": final_tts_platform,
+                    "api_key": final_tts_key,
+                    "api_url": final_tts_url,
+                    "model": tts_model,
+                    "voice_name": voice_name
+                }
+            )
+            
+            # 注意：这里不再单独执行 STT 和 Chat，而是将整个流程交给 processor
+            # 因为 processor 需要拿到 audio_bytes 并从头开始
+            # 所以我们需要重构一下逻辑，如果是 stream 模式，直接跳过上面的 Step 1 & Step 2
+            # 但为了保持兼容性，我们可以在这里直接 return StreamingResponse
+            
+            return StreamingResponse(
+                processor.process(audio_bytes, audio.content_type or "audio/wav"),
+                media_type="application/x-ndjson"
+            )
 
         # ========== Step 3: TTS (Non-streaming) ==========
         audio_base64 = ""

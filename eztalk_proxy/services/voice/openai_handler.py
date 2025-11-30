@@ -104,6 +104,78 @@ async def process_chat(
         return assistant_text
     except Exception as e:
         logger.exception("OpenAI Chat error")
+
+async def process_chat_stream(
+    user_text: str,
+    chat_history: list,
+    system_prompt: str,
+    api_key: str,
+    api_url: str = None,
+    model: str = "gpt-4o-mini"
+):
+    """
+    OpenAI Chat Completion (Streaming)
+    Yields chunks of text.
+    """
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OpenAI API Key 未提供")
+        
+    if not api_url:
+        raise HTTPException(status_code=400, detail="OpenAI API 地址未提供")
+        
+    target_url = api_url
+    if not target_url.endswith("/completions"):
+        target_url = f"{target_url.rstrip('/')}/chat/completions"
+
+    logger.info(f"Stream response using OpenAI {model} at {target_url}")
+    
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    
+    recent_history = chat_history[-6:] if len(chat_history) > 6 else chat_history
+    for msg in recent_history:
+        messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
+    
+    messages.append({"role": "user", "content": user_text})
+    
+    chat_payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": 150,
+        "stream": True
+    }
+    
+    client = get_http_client()
+    try:
+        async with client.stream(
+            "POST",
+            target_url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=chat_payload,
+            timeout=30.0
+        ) as response:
+            if response.status_code != 200:
+                logger.error(f"OpenAI Chat Stream failed: {response.status_code}")
+                yield f"Error: {response.status_code}"
+                return
+
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    data = line[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        if chunk['choices'] and chunk['choices'][0]['delta'].get('content'):
+                            content = chunk['choices'][0]['delta']['content']
+                            yield content
+                    except:
+                        pass
+    except Exception as e:
+        logger.exception("OpenAI Chat Stream error")
+        yield f"Error: {str(e)}"
+
 async def process_tts(
     text: str,
     api_key: str,

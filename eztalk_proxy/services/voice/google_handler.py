@@ -92,6 +92,42 @@ def process_chat(user_text: str, chat_history: list, system_prompt: str, api_key
         logger.exception("Gemini Chat error")
         raise HTTPException(status_code=500, detail=f"对话生成失败: {str(e)}")
 
+def process_chat_stream(user_text: str, chat_history: list, system_prompt: str, api_key: str, model: str, api_url: str = None):
+    """
+    Google Gemini Chat (Streaming)
+    Yields chunks of text.
+    """
+    client = get_client(api_key, api_url)
+    logger.info(f"Stream response using Gemini {model}")
+    
+    prompt_parts = []
+    if system_prompt:
+        prompt_parts.append(system_prompt)
+    
+    recent_history = chat_history[-6:] if len(chat_history) > 6 else chat_history
+    for msg in recent_history:
+        prompt_parts.append(msg.get("content", ""))
+    
+    prompt_parts.append(user_text)
+    full_prompt = "\n".join(prompt_parts)
+    
+    try:
+        chat_response = client.models.generate_content_stream(
+            model=model,
+            contents=full_prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=150
+            )
+        )
+        
+        for chunk in chat_response:
+            if chunk.text:
+                yield chunk.text
+                
+    except Exception as e:
+        logger.exception("Gemini Chat Stream error")
+        yield f"Error: {str(e)}"
+
 def process_tts(text: str, api_key: str, voice_name: str, model: str, api_url: str = None) -> bytes:
     """
     Google Gemini TTS
