@@ -119,7 +119,8 @@ class VoiceStreamProcessor:
         # Construct system prompt
         system_prompt = self.chat_config.get("system_prompt", "")
         
-        if platform == "OpenAI":
+        # SiliconFlow and other OpenAI-compatible platforms
+        if platform == "OpenAI" or platform == "SiliconFlow":
             async for chunk in openai_handler.process_chat_stream(
                 user_text=user_text,
                 chat_history=self.chat_config.get("history", []),
