@@ -164,6 +164,14 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     )
     today_visits = result.scalar()
 
+    # 统计总访问量
+    result_total = await db.execute(
+        select(func.count())
+        .select_from(AccessLog)
+        .where(AccessLog.path.contains("/chat"))
+    )
+    total_visits = result_total.scalar()
+
     return {
         "app_version": APP_VERSION,
         "uptime": uptime_string,
@@ -172,7 +180,8 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
         "process_memory_mb": process.memory_info().rss / 1024 / 1024,
         "connections": len(process.connections()),
         "threads": process.num_threads(),
-        "today_visits": today_visits
+        "today_visits": today_visits,
+        "total_visits": total_visits
     }
 
 @router.get("/stats/trend", dependencies=[Depends(verify_admin)])

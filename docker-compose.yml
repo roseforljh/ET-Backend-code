@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   eztalk-proxy:
@@ -25,6 +25,7 @@ services:
       - .env
     volumes:
       - ./temp_uploads:/tmp/temp_document_uploads
+      - ./data:/app/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7860/health"]

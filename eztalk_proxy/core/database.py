@@ -4,7 +4,11 @@ from sqlalchemy.pool import NullPool
 import os
 
 # 数据库文件路径
-DATABASE_URL = "sqlite+aiosqlite:///./eztalk.db"
+# 确保数据目录存在 (在 Docker 中映射到 /app/data)
+if not os.path.exists("./data"):
+    os.makedirs("./data", exist_ok=True)
+
+DATABASE_URL = "sqlite+aiosqlite:///./data/eztalk.db"
 
 # 创建异步引擎
 engine = create_async_engine(

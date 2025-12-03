@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-APP_VERSION = os.getenv("APP_VERSION", "1.9.9.77-gcs-support")
+APP_VERSION = os.getenv("APP_VERSION", "1.9.9.78-gcs-support")
 
 LOG_LEVEL_FROM_ENV = os.getenv("LOG_LEVEL", "INFO").upper()
 
