@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 # 导入新的处理器
 from ..services.voice import google_handler, openai_handler, minimax_handler, siliconflow_handler
 from ..services.voice_streaming import VoiceStreamProcessor
+from ..utils.helpers import strip_markdown_for_tts
 from eztalk_proxy.services.requests.prompts import compose_voice_system_prompt
 
 logger = logging.getLogger("EzTalkProxy.Routers.VoiceChat")
@@ -224,6 +225,9 @@ async def complete_voice_chat(
             
         if not assistant_text:
             assistant_text = "抱歉，我无法理解您的问题。"
+
+        # 语音模式兜底：送入 TTS / 返回前去掉明显 Markdown 结构
+        assistant_text = strip_markdown_for_tts(assistant_text)
             
         # ========== Step 3: Streaming Response (If enabled) ==========
         if stream:
@@ -379,8 +383,11 @@ async def text_to_speech(
     model: str = Form(...),
     format: str = Form("wav")
 ):
+    # 语音模式兜底：先移除明显 Markdown，再送入 TTS
+    clean_text = strip_markdown_for_tts(text)
+
     # 默认使用 Google
-    pcm_data = google_handler.process_tts(text, api_key, voice_name, model)
+    pcm_data = google_handler.process_tts(clean_text, api_key, voice_name, model)
     
     if format.lower() == "wav":
         audio_data = wave_file_bytes(pcm_data)

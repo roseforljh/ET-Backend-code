@@ -4,6 +4,7 @@ import orjson
 import re
 from typing import AsyncGenerator, Dict, Any
 from .voice import google_handler, openai_handler, minimax_handler, siliconflow_handler
+from ..utils.helpers import strip_markdown_for_tts
 
 logger = logging.getLogger("EzTalkProxy.Services.VoiceStreaming")
 
@@ -54,14 +55,15 @@ class VoiceStreamProcessor:
                         if not sentence.strip():
                             continue
                             
-                        # Yield updated text
+                        # Yield updated text（meta 中保留原始文本，便于展示/调试）
                         yield self._format_event("meta", {
                             "user_text": user_text,
                             "assistant_text": self.full_assistant_text
                         })
                         
                         # 3. TTS Stream (Stop-and-Go: Await TTS for this sentence)
-                        async for audio_chunk in self._run_tts_stream(sentence):
+                        clean_sentence = strip_markdown_for_tts(sentence)
+                        async for audio_chunk in self._run_tts_stream(clean_sentence):
                             if audio_chunk:
                                 yield self._format_event("audio", {
                                     "data": base64.b64encode(audio_chunk).decode('utf-8')
@@ -73,7 +75,8 @@ class VoiceStreamProcessor:
                     "user_text": user_text,
                     "assistant_text": self.full_assistant_text
                 })
-                async for audio_chunk in self._run_tts_stream(self.sentence_buffer):
+                clean_sentence = strip_markdown_for_tts(self.sentence_buffer)
+                async for audio_chunk in self._run_tts_stream(clean_sentence):
                     if audio_chunk:
                         yield self._format_event("audio", {
                             "data": base64.b64encode(audio_chunk).decode('utf-8')

@@ -72,6 +72,89 @@ except ImportError:
 
 logger = logging.getLogger("EzTalkProxy.Utils")
 
+# 快速检测是否疑似包含 Markdown 结构，用于语音模式兜底清洗的早期退出
+_MD_QUICK_PATTERN = re.compile(
+    r"(^\s{0,3}#{1,6}\s)"          # 标题行: # / ## / ...
+    r"|(^\s*[-*+]\s+)"            # 无序列表: - item
+    r"|(^\s*\d+\.\s+)"            # 有序列表: 1. item
+    r"|(```)"                     # 代码块围栏
+    r"|(`[^`]+`)"                 # 行内代码
+    r"|(\[.+?\]\(.+?\))"          # 链接 [text](url)
+    r"|(!\[.*?\]\(.*?\))"         # 图片 ![alt](url)
+    r"|(^\s*\|.+\|)"              # 表格行
+    r"|(\*\*.+?\*\*)"             # 粗体 **text**
+    ,
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def strip_markdown_for_tts(text: str) -> str:
+    """
+    语音模式兜底：在送入 TTS 前对明显的 Markdown 结构做轻量清洗。
+    设计原则：
+    - 检测与清洗都必须是 O(n) 且非常快
+    - 若文本本身没有明显 Markdown 结构，则直接原样返回，不做任何修改
+    - 尽量删除/改写排版符号，保留语义内容
+    """
+    if not isinstance(text, str) or not text:
+        return text
+
+    # 快速检测：绝大多数正常口语在这里直接返回，避免多轮正则
+    if not _MD_QUICK_PATTERN.search(text):
+        return text
+
+    cleaned = text
+
+    # 1. 去掉围栏代码块 ``` ```（整体移除，避免读代码噪音）
+    cleaned = re.sub(
+        r"```[a-zA-Z0-9_+\-]*\n.*?\n```",
+        "",
+        cleaned,
+        flags=re.DOTALL,
+    )
+
+    # 2. 行首标题、引用、列表标记
+    cleaned = re.sub(r"^\s{0,3}#{1,6}\s*", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s{0,3}>\s?", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*[-*+]\s+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*\d+\.\s+", "", cleaned, flags=re.MULTILINE)
+
+    # 3. 水平分隔线（---、*** 等）
+    cleaned = re.sub(
+        r"^\s{0,3}[-*_]{3,}\s*$",
+        "",
+        cleaned,
+        flags=re.MULTILINE,
+    )
+
+    # 4. 链接与图片：[text](url)、![alt](url) -> 仅保留文字部分
+    cleaned = re.sub(
+        r"!\[([^\]]*)\]\([^)]+\)",
+        r"\1",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"\[([^\]]+)\]\([^)]+\)",
+        r"\1",
+        cleaned,
+    )
+
+    # 5. 行内代码与加粗/斜体：去掉符号，保留内容
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)
+
+    # 6. 表格中竖线：将 | 替换为顿号/逗号，避免被读出为奇怪符号
+    # 这里不过度区分是不是表格，只要出现大量 | 就做温和替换
+    cleaned = re.sub(r"\|+", "，", cleaned)
+
+    # 7. 收尾：清理多余空白与空行
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = cleaned.strip()
+
+    return cleaned
+
 
 def orjson_dumps_bytes_wrapper(data: Any) -> bytes:
     return orjson.dumps(
