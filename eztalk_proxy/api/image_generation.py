@@ -602,7 +602,8 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
     seedream_mode = False
 
     model_lower = (effective_model or "").lower()
-    is_gemini_image_model = "gemini" in model_lower and ("flash-image" in model_lower or "gemini-pro-vision" in model_lower)
+    # is_gemini_image_model will be determined after channel normalization
+    is_gemini_image_model = False
     provider = request.provider or "openai compatible"
     provider_lower = provider.lower()
     
@@ -684,6 +685,11 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
     normalized_channel = _normalize_channel(provider)
     
     logger.info(f"[IMG DEBUG] Channel mapping - original: {provider} -> normalized: {normalized_channel}")
+
+    if normalized_channel == "gemini":
+        is_gemini_image_model = True
+    else:
+        is_gemini_image_model = "gemini" in model_lower and ("flash-image" in model_lower or "gemini-pro-vision" in model_lower or "image" in model_lower or "vision" in model_lower)
 
     # ===== 默认平台（SiliconFlow/Kolors）自动注入（前端不可见）=====
     # 触发条件：provider 明确为“默认”或“default”等
@@ -1264,8 +1270,11 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
         try:
             model_lower = request.model.lower()
             provider_lower = (request.provider or "").lower()
-            is_gemini_image_model = "gemini" in model_lower and ("flash-image" in model_lower or "gemini-pro-vision" in model_lower)
             normalized_channel = {"gemini": "gemini", "google": "gemini", "openai compatible": "openai_compatible", "openai": "openai_compatible", "OpenAI兼容": "openai_compatible"}.get(request.provider or "openai compatible", provider_lower)
+            if normalized_channel == "gemini":
+                is_gemini_image_model = True
+            else:
+                is_gemini_image_model = "gemini" in model_lower and ("flash-image" in model_lower or "gemini-pro-vision" in model_lower or "image" in model_lower or "vision" in model_lower)
         except Exception:
             normalized_channel = provider_lower
             is_gemini_image_model = False
