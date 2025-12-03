@@ -155,20 +155,28 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     # 转换为 UTC 时间 (naive) 用于数据库查询
     today_start_utc = today_start_bj.astimezone(timezone.utc).replace(tzinfo=None)
     
-    # 仅统计 /chat 接口的访问量
+    # 统计核心业务接口的访问量 (Chat, Image, Voice)
+    # 使用 OR 条件匹配多个路径前缀
+    core_paths = [
+        AccessLog.path.contains("/chat"),
+        AccessLog.path.contains("/images/generations"),
+        AccessLog.path.contains("/voice-chat")
+    ]
+
+    # 今日访问量
     result = await db.execute(
         select(func.count())
         .select_from(AccessLog)
         .where(AccessLog.timestamp >= today_start_utc)
-        .where(AccessLog.path.contains("/chat"))
+        .where(or_(*core_paths))
     )
     today_visits = result.scalar()
 
-    # 统计总访问量
+    # 总访问量
     result_total = await db.execute(
         select(func.count())
         .select_from(AccessLog)
-        .where(AccessLog.path.contains("/chat"))
+        .where(or_(*core_paths))
     )
     total_visits = result_total.scalar()
 
@@ -207,6 +215,13 @@ async def get_stats_trend(period: str = "day", db: AsyncSession = Depends(get_db
     else:
         raise HTTPException(status_code=400, detail="Invalid period")
 
+    # 统计核心业务接口
+    core_paths = [
+        AccessLog.path.contains("/chat"),
+        AccessLog.path.contains("/images/generations"),
+        AccessLog.path.contains("/voice-chat")
+    ]
+
     # 使用 SQLAlchemy 构建查询
     # func.strftime(format, timestring, modifier, ...)
     stmt = (
@@ -215,7 +230,7 @@ async def get_stats_trend(period: str = "day", db: AsyncSession = Depends(get_db
             func.count().label('count')
         )
         .where(AccessLog.timestamp >= start_time)
-        .where(AccessLog.path.contains("/chat"))
+        .where(or_(*core_paths))
         .group_by('time_bucket')
         .order_by('time_bucket')
     )
@@ -237,8 +252,14 @@ async def get_access_logs(
     """
     获取详细访问日志，支持筛选
     """
-    # 默认只显示 /chat 接口的日志
-    stmt = select(AccessLog).where(AccessLog.path.contains("/chat")).order_by(AccessLog.timestamp.desc())
+    # 默认只显示核心业务接口的日志
+    core_paths = [
+        AccessLog.path.contains("/chat"),
+        AccessLog.path.contains("/images/generations"),
+        AccessLog.path.contains("/voice-chat")
+    ]
+    
+    stmt = select(AccessLog).where(or_(*core_paths)).order_by(AccessLog.timestamp.desc())
     
     if start_time:
         stmt = stmt.where(AccessLog.timestamp >= start_time)
