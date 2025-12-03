@@ -300,43 +300,92 @@ def _extract_text_from_docx_python_docx(file_path: str) -> Optional[str]:
         return None
 
 def _extract_text_from_doc_olefile(file_path: str) -> Optional[str]:
-    """使用olefile库从.doc文档中提取文本（简单方法）"""
+    """使用olefile库从.doc文档中提取文本（增强版，支持中文，智能编码检测）"""
     if not olefile:
         logger.warning("Attempted to extract DOC text, but olefile library is not available.")
         return None
+    
+    content = None
     try:
-        # 这是一个基础的.doc文本提取方法
-        # 注意：.doc格式复杂，这个方法可能无法提取所有文本
-        with open(file_path, 'rb') as f:
-            # 尝试从.doc文件中提取可读文本
-            content = f.read()
-            
-            # 查找可能的文本内容（简单的启发式方法）
-            text_parts = []
-            i = 0
-            while i < len(content) - 1:
-                # 查找可能的文本字符序列
-                if 32 <= content[i] <= 126:  # ASCII可打印字符
-                    start = i
-                    while i < len(content) and 32 <= content[i] <= 126:
-                        i += 1
-                    if i - start > 3:  # 至少4个连续字符才认为是文本
-                        text_parts.append(content[start:i].decode('ascii', errors='ignore'))
-                else:
-                    i += 1
-            
-            if text_parts:
-                extracted = ' '.join(text_parts).strip()
-                # 过滤掉太短或明显是垃圾的内容
-                words = extracted.split()
-                meaningful_words = [w for w in words if len(w) > 1 and not w.isdigit()]
-                if len(meaningful_words) > 5:  # 至少5个有意义的词
-                    return ' '.join(meaningful_words)
-        
-        return None
+        # 尝试通过 OLE 结构读取 WordDocument 流，减少二进制噪声
+        if olefile.isOleFile(file_path):
+            with olefile.OleFileIO(file_path) as ole:
+                if ole.exists('WordDocument'):
+                    with ole.openstream('WordDocument') as stream:
+                        content = stream.read()
     except Exception as e:
-        logger.error(f"Error extracting text from DOC {file_path} using olefile: {e}", exc_info=True)
+        logger.warning(f"Failed to read WordDocument stream from {file_path}: {e}")
+    
+    # 如果读取流失败，回退到读取整个文件
+    if content is None:
+        try:
+            with open(file_path, 'rb') as f:
+                content = f.read()
+        except Exception as e:
+            logger.error(f"Failed to read file {file_path}: {e}")
+            return None
+
+    # 辅助函数：评估文本看起来是否像正常的中文/英文文本
+    def score_text_validity(text: str) -> float:
+        if not text: return 0.0
+        length = len(text)
+        if length == 0: return 0.0
+        
+        # 常用中文高频字和标点
+        common_chars = {'的', '一', '是', '在', '不', '了', '有', '和', '人', '这', '中', '大', '为', '上', '个', '国', '我', '以', '要', '他', '时', '来', '用', '们', '生', '到', '作', '地', '于', '出', '就', '分', '对', '成', '会', '可', '主', '发', '年', '动', '同', '工', '也', '能', '下', '过', '子', '说', '产', '种', '面', '而', '方', '后', '多', '定', '行', '学', '法', '所', '民', '得', '经', '十', '三', '之', '进', '着', '等', '部', '度', '家', '电', '力', '里', '如', '水', '化', '高', '自', '二', '理', '起', '小', '物', '现', '实', '加', '量', '都', '两', '体', '制', '机', '当', '使', '点', '从业', '本', '去', '心', '界', '义', '社', '合', '平', '士', '告', '外', '没', '看', '提', '那', '问', '指', '气', '做', '邻', '西', '真', '山', '内', '月', '公', '全', '信', '期', '安', '或', '书', '门', '应', '路', '利', '手', '最', '新', '世', '位', '场', '变', '得', '员', '表', '口', '常', '关', '争', '军', '目', '者', '次', '解', '文', '九', '八', '无', '相', '日', '外', '刚', '但', '步', '名', '建', '果', '料', '张', '接', '员', '司', '住', '实', '运', '通', '农', '保', '导', '集', '物', '展', '象', '完', '院', '样', '干', '并', '利', '省', '源', '安', '千', '众', '效', '管', '接', '觉', '身', '美', '意', '先', '金', '月', '回', '工', '热', '性', '音', '老', '切', '级', '由', '因', '联', '即', '百', '知', '表', '队', '组', '决', '治', '看', '住', '美', '点', '题', '，', '。', '、', '；', '：', '？', '！', '“', '”', '（', '）'}
+        
+        score = 0
+        for char in text:
+            if char in common_chars:
+                score += 1
+            elif 'a' <= char <= 'z' or 'A' <= char <= 'Z' or '0' <= char <= '9':
+                score += 0.1 # 英文数字权重低一点，避免全英文二进制噪声干扰
+        
+        return score / length
+
+    candidates = []
+    import re
+
+    # 方法1：UTF-16LE (Word默认)
+    try:
+        # 填充到偶数长度
+        content_le = content + b'\0' if len(content) % 2 != 0 else content
+        # 解码并过滤无效字符
+        text_le = content_le.decode('utf-16-le', errors='ignore')
+        # 清洗：只保留 CJK、ASCII 和常见符号
+        # 匹配连续的有效字符块（至少2个字符），减少单字噪声
+        matches = re.findall(r'[\u4e00-\u9fff\x20-\x7e\uff00-\uffef\u3000-\u303f\t\n\r]{2,}', text_le)
+        cleaned_le = "".join(matches)
+        score_le = score_text_validity(cleaned_le)
+        candidates.append((score_le, cleaned_le, "utf-16-le"))
+    except Exception:
+        pass
+
+    # 方法2：GB18030 (中文文档常见，尤其是老文档)
+    try:
+        text_gb = content.decode('gb18030', errors='ignore')
+        matches = re.findall(r'[\u4e00-\u9fff\x20-\x7e\uff00-\uffef\u3000-\u303f\t\n\r]{2,}', text_gb)
+        cleaned_gb = "".join(matches)
+        score_gb = score_text_validity(cleaned_gb)
+        candidates.append((score_gb, cleaned_gb, "gb18030"))
+    except Exception:
+        pass
+
+    # 选取得分最高的
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    
+    if not candidates:
         return None
+
+    best_score, best_text, best_encoding = candidates[0]
+    
+    # 阈值：至少有1%的字符是常见字符，否则认为是乱码
+    if best_score > 0.01 and len(best_text) > 5:
+        logger.info(f"Extracted .doc text using {best_encoding}, score={best_score:.4f}, length={len(best_text)}")
+        return best_text
+    
+    logger.warning(f"Extraction failed: best score {best_score:.4f} too low. Encoding: {best_encoding}")
+    return None
 
 def _extract_text_from_excel(file_path: str, mime_type: str) -> Optional[str]:
     """从Excel文件中提取文本"""
