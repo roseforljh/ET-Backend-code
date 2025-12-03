@@ -163,6 +163,12 @@ SILICONFLOW_DEFAULT_IMAGE_MODEL = os.getenv(
 # 支持两种变量名，便于本地配置：SILICONFLOW_API_KEY 或 SILICONFLOW_DEFAULT_API_KEY
 SILICONFLOW_API_KEY_DEFAULT = os.getenv("SILICONFLOW_API_KEY") or os.getenv("SILICONFLOW_DEFAULT_API_KEY")
 
+# ===== Modal Z-Image-Turbo (Default) =====
+MODAL_IMAGE_API_URLS = os.getenv(
+    "VITE_API_URLS",
+    "https://kunzel19912004--z-image-turbo-api-generate.modal.run,https://kzi71y--z-image-turbo-api-generate.modal.run"
+).split(",")
+
 # ===== Text Chat Presets (Default) =====
 # 前端"默认"平台：隐藏参数，后端自动注入；密钥仅从本地环境读取，禁止提交到仓库
 DEFAULT_TEXT_API_URL = os.getenv(

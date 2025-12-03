@@ -17,6 +17,7 @@ from ..core.config import (
     SILICONFLOW_IMAGE_API_URL,
     SILICONFLOW_DEFAULT_IMAGE_MODEL,
     SILICONFLOW_API_KEY_DEFAULT,
+    MODAL_IMAGE_API_URLS,
 )
 
 logger = logging.getLogger(__name__)
@@ -395,10 +396,201 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
     except Exception:
         pass
 
-    # 有效参数的本地注入占位（可能被“默认平台”覆盖）
+    # 有效参数的本地注入占位（可能被"默认平台"覆盖）
     effective_api_key = request.apiKey
     effective_url = url
     effective_model = request.model
+
+    # ===== Modal Z-Image-Turbo 专用分支（双 URL 轮询）=====
+    model_lower = (effective_model or "").lower()
+    is_modal_z_image = model_lower == "z-image-turbo-modal"
+    
+    if is_modal_z_image:
+        logger.info(f"[IMG MODAL] Detected Modal Z-Image-Turbo model, using dedicated branch")
+        
+        # 解析目标尺寸（支持 aspect_ratio 与 image_size）
+        width, height = 1024, 1024  # 默认
+        try:
+            # 优先从 aspect_ratio 推导（结合 size 或 image_size）
+            aspect_ratio_val = getattr(request, "aspect_ratio", None)
+            if not aspect_ratio_val and isinstance(request.generation_config, dict):
+                img_cfg = request.generation_config.get("imageConfig") or {}
+                aspect_ratio_val = img_cfg.get("aspectRatio")
+            
+            size_val = getattr(request, "size", None) or request.image_size or "1024x1024"
+            
+            # Modal 支持的尺寸映射
+            modal_size_map = {
+                # 2K 档
+                ("2k", "1:1"): (2048, 2048),
+                ("2k", "16:9"): (2048, 1152),
+                ("2k", "9:16"): (1152, 2048),
+                ("2k", "4:3"): (2048, 1536),
+                # HD 档
+                ("hd", "1:1"): (1024, 1024),
+                ("hd", "16:9"): (1024, 576),
+                ("hd", "9:16"): (576, 1024),
+            }
+            
+            # 解析逻辑：优先尝试从 aspect_ratio 中提取 "2K"/"HD" 和比例
+            # 例如前端传 "2K 1:1" 或 "HD 16:9"
+            
+            target_size_key = None
+            target_ratio_key = None
+            
+            ar_clean = (aspect_ratio_val or "").strip().upper()
+            if ar_clean:
+                # 尝试解析 "2K 1:1" 格式
+                for prefix in ["2K", "HD"]:
+                    if prefix in ar_clean:
+                        target_size_key = prefix.lower()
+                        # 提取比例部分，移除 "2K"/"HD" 和空格
+                        target_ratio_key = ar_clean.replace(prefix, "").strip()
+                        break
+                
+                # 如果没找到前缀，假设只传了 "1:1"，则需要结合 size_val
+                if not target_size_key:
+                    target_ratio_key = ar_clean
+            
+            # 如果 aspect_ratio 里没包含档位，尝试从 size_val 解析
+            if not target_size_key:
+                s_clean = size_val.lower().strip()
+                if s_clean in ("2k", "4k"):
+                    target_size_key = "2k"
+                elif s_clean in ("hd", "1k", "1024x1024"):
+                    target_size_key = "hd"
+            
+            # 默认值
+            if not target_size_key:
+                target_size_key = "2k" # 默认为 2K 档位（如果无法判断）
+            if not target_ratio_key:
+                target_ratio_key = "1:1"
+
+            # 查找映射
+            mapped = modal_size_map.get((target_size_key, target_ratio_key))
+            
+            # 如果没找到精确映射（例如传了 HD 4:3），回退逻辑
+            if not mapped and target_size_key == "hd" and target_ratio_key == "4:3":
+                 # HD 不支持 4:3，回退到 2K 4:3 ? 或者 HD 1:1 ?
+                 # 根据用户反馈，HD 确实没 4:3。回退到 HD 1:1 比较安全
+                 mapped = modal_size_map.get(("hd", "1:1"))
+                 logger.warning(f"[IMG MODAL] HD 4:3 not supported, fallback to HD 1:1")
+
+            if mapped:
+                width, height = mapped
+                logger.info(f"[IMG MODAL] Mapped '{target_size_key}' + '{target_ratio_key}' -> {width}x{height}")
+            else:
+                # 最后的兜底：如果还无法映射，尝试解析 WxH
+                if "x" in size_val.lower():
+                    try:
+                        parts = size_val.lower().split("x")
+                        if len(parts) == 2:
+                            width = int(parts[0])
+                            height = int(parts[1])
+                    except:
+                        pass
+        except Exception as e_size:
+            logger.warning(f"[IMG MODAL] Size parsing failed, using default 1024x1024: {e_size}")
+        
+        # 对齐到 8 的倍数
+        width = (width // 8) * 8
+        height = (height // 8) * 8
+        width = max(256, min(width, 2048))
+        height = max(256, min(height, 2048))
+        
+        # 推理步数 (强制限制为 4 以节省算力，忽略前端传入的更大值)
+        # 用户反馈算力消耗过快，因此在此处做硬性限制
+        req_steps = request.num_inference_steps or 4
+        steps = min(req_steps, 4)
+        steps = max(1, steps)
+        
+        prompt = request.prompt or ""
+        if not prompt.strip():
+            return _fallback_response("modal_empty_prompt", user_text="提示词为空，无法生成图像。")
+        
+        # Modal 双 URL 轮询（主 → 备）
+        modal_urls = [url.strip() for url in MODAL_IMAGE_API_URLS if url.strip()]
+        
+        last_error = None
+        start_time = time.time()
+        
+        for idx, modal_url in enumerate(modal_urls):
+            try:
+                logger.info(f"[IMG MODAL] Attempting URL {idx+1}/{len(modal_urls)}: {modal_url}")
+                logger.info(f"[IMG MODAL] Request params: prompt='{prompt[:50]}...', width={width}, height={height}, steps={steps}")
+                
+                # Modal FastAPI endpoint 默认使用 Query Parameters，且可能只支持 GET
+                # 尝试使用 GET 请求，并将参数作为 Query Params
+                async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), http2=True, follow_redirects=True) as client:
+                    resp = await client.get(
+                        modal_url,
+                        params={
+                            "prompt": prompt,
+                            "width": width,
+                            "height": height,
+                            "steps": steps
+                        }
+                    )
+                
+                if resp.status_code < 200 or resp.status_code >= 300:
+                    err_text = resp.text[:500] if resp.text else "(empty)"
+                    logger.warning(f"[IMG MODAL] URL {idx+1} returned non-2xx {resp.status_code}: {err_text}")
+                    last_error = f"HTTP {resp.status_code}: {err_text}"
+                    continue  # 尝试下一个 URL
+                
+                # 成功获取 JPEG 字节
+                jpeg_bytes = resp.content
+                if not jpeg_bytes:
+                    logger.warning(f"[IMG MODAL] URL {idx+1} returned empty content")
+                    last_error = "Empty response body"
+                    continue
+                
+                # 转为 Data URI
+                b64_str = base64.b64encode(jpeg_bytes).decode("utf-8")
+                data_uri = f"data:image/jpeg;base64,{b64_str}"
+                
+                elapsed_ms = int((time.time() - start_time) * 1000)
+                logger.info(f"[IMG MODAL] Successfully generated image via URL {idx+1}, size={len(jpeg_bytes)} bytes, took {elapsed_ms}ms")
+                
+                # 封装为统一响应
+                normalized = ImageGenerationResponse(
+                    images=[ImageUrl(url=data_uri)],
+                    text=prompt,
+                    timings={"inference": elapsed_ms},
+                    seed=random.randint(1, 2**31 - 1)
+                )
+                
+                # 应用 force_data_uri（虽然已经是 data URI）
+                if getattr(request, "force_data_uri", False):
+                    normalized = await _force_images_to_data_uri(normalized)
+                
+                # 保存到历史
+                try:
+                    persist_key = getattr(request, "conversation_id", None) or "unknown"
+                    if persist_key and normalized.images:
+                        images_payload = [{"url": img.url} for img in normalized.images]
+                        timings_dict = _safe_dump_timings(normalized.timings)
+                        meta_payload = {"text": normalized.text, "seed": normalized.seed, "timings": timings_dict}
+                        logger.info(f"[IMG MODAL] Saving image to history for conversation={persist_key}")
+                        save_images(persist_key, images_payload, meta_payload)
+                except Exception as hist_err:
+                    logger.warning(f"[IMG MODAL] Failed to save to history: {hist_err}")
+                
+                return normalized
+                
+            except httpx.RequestError as e:
+                logger.warning(f"[IMG MODAL] URL {idx+1} request error: {e}")
+                last_error = f"Request error: {e}"
+                continue
+            except Exception as e:
+                logger.warning(f"[IMG MODAL] URL {idx+1} unexpected error: {e}")
+                last_error = f"Unexpected error: {e}"
+                continue
+        
+        # 所有 URL 都失败
+        error_msg = f"Modal 图像服务不可用（已尝试 {len(modal_urls)} 个端点）。最后错误: {last_error}"
+        logger.error(f"[IMG MODAL] All URLs failed: {last_error}")
+        return _fallback_response(f"modal_all_failed: {last_error}", user_text=error_msg)
 
     headers = {
         "Authorization": f"Bearer {effective_api_key or ''}",
