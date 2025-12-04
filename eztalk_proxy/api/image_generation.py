@@ -637,7 +637,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                 
                 # Modal FastAPI endpoint 默认使用 Query Parameters，且可能只支持 GET
                 # 尝试使用 GET 请求，并将参数作为 Query Params
-                async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), http2=True, follow_redirects=True) as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0), http2=True, follow_redirects=True) as client:
                     resp = await client.get(
                         modal_url,
                         params={
@@ -1104,7 +1104,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                 # Case B: URL cached -> fetch and convert to base64 for inline_data
                 elif isinstance(last_image_ref, str) and last_image_ref.startswith(("http://", "https://")):
                     try:
-                        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0), http2=True, follow_redirects=True) as _client:
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0), http2=True, follow_redirects=True) as _client:
                             resp_img = await _client.get(last_image_ref)
                             resp_img.raise_for_status()
                             img_bytes = resp_img.content
@@ -1370,7 +1370,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
         logger.info(f"[IMG] Request headers: Authorization: Bearer {(effective_api_key[:10] + '...') if isinstance(effective_api_key, str) and effective_api_key else '(none)'} , Content-Type: application/json")
  
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), http2=True, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0), http2=True, follow_redirects=True) as client:
             resp = await client.post(url, headers=headers, json=payload)
     except httpx.RequestError as e:
         logger.error(f"[IMG] Upstream request error to {url}: {e}", exc_info=True)
@@ -1405,7 +1405,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                     payload_no_history = dict(payload)
                     payload_no_history["contents"] = [last_turn]
                     logger.info("[IMG] 400 from upstream in Gemini native branch, retrying once without history...")
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), http2=True, follow_redirects=True) as client:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0), http2=True, follow_redirects=True) as client:
                         alt_no_hist = await client.post(url, headers=headers, json=payload_no_history)
                     if 200 <= alt_no_hist.status_code < 300:
                         try:
@@ -1462,7 +1462,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                     payload_retry = dict(payload)
                     payload_retry["generationConfig"] = gc_retry
                     logger.info("[IMG] 400 from upstream in Gemini native branch, retrying without responseModalities...")
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), http2=True, follow_redirects=True) as client:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0), http2=True, follow_redirects=True) as client:
                         alt = await client.post(url, headers=headers, json=payload_retry)
                     if 200 <= alt.status_code < 300:
                         try:
@@ -1543,7 +1543,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
             alt_attempts.append(("C:x-api-key", url_without_key, c_headers))
             
             try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), http2=True, follow_redirects=True) as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0), http2=True, follow_redirects=True) as client:
                     for idx, (label, alt_url, alt_headers) in enumerate(alt_attempts):
                         logger.info(f"[IMG] Retrying ({label}) -> {alt_url}")
                         alt_resp = await client.post(alt_url, headers=alt_headers, json=payload)
@@ -1686,7 +1686,7 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
                 last_json = raw
                 for attempt in range(1, max_retries + 1):
                     logger.info(f"[IMG] No images found; performing retry {attempt}/{max_retries} without user-visible text...")
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), http2=True, follow_redirects=True) as client:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0), http2=True, follow_redirects=True) as client:
                         resp2 = await client.post(url, headers=headers, json=payload)
                     if 200 <= resp2.status_code < 300:
                         try:
