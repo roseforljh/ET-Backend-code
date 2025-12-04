@@ -168,6 +168,12 @@ MODAL_IMAGE_API_URLS = os.getenv(
     "VITE_API_URLS",
     "https://kunzel19912004--z-image-turbo-api-generate.modal.run,https://kzi71y--z-image-turbo-api-generate.modal.run"
 ).split(",")
+# ===== Modal Qwen-Image-Edit (Default) =====
+QWEN_EDIT_API_URLS = os.getenv(
+    "QWEN_EDIT_API_URLS",
+    "https://kimdungduong115--qwen-image-edit-api-api.modal.run,https://stevenserrata7345--qwen-image-edit-api-api.modal.run"
+).split(",")
+QWEN_EDIT_API_SECRET = os.getenv("QWEN_EDIT_API_SECRET", "sk-my-super-secret-password-123456")
 
 # ===== Text Chat Presets (Default) =====
 # 前端"默认"平台：隐藏参数，后端自动注入；密钥仅从本地环境读取，禁止提交到仓库

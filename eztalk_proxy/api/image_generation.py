@@ -18,6 +18,8 @@ from ..core.config import (
     SILICONFLOW_DEFAULT_IMAGE_MODEL,
     SILICONFLOW_API_KEY_DEFAULT,
     MODAL_IMAGE_API_URLS,
+    QWEN_EDIT_API_URLS,
+    QWEN_EDIT_API_SECRET,
 )
 
 logger = logging.getLogger(__name__)
@@ -405,6 +407,121 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
     model_lower = (effective_model or "").lower()
     is_modal_z_image = model_lower == "z-image-turbo-modal"
     
+    # ===== Modal Qwen-Image-Edit 专用分支 =====
+    is_qwen_edit = model_lower == "qwen-image-edit-modal"
+    if is_qwen_edit:
+        logger.info(f"[IMG MODAL] Detected Qwen-Image-Edit model, using dedicated branch")
+        
+        # 1. 提取原图 (Base64)
+        # 支持从 contents (multimodal) 或 image (top-level) 提取
+        input_image_b64 = None
+        
+        # 尝试从 contents 提取 (OpenAI/Gemini 兼容格式)
+        if request.contents:
+            for part in request.contents:
+                # inline_data
+                if "inline_data" in part:
+                    input_image_b64 = part["inline_data"].get("data")
+                    if input_image_b64: break
+                # image_url (data URI)
+                if "image_url" in part:
+                    url_val = part["image_url"].get("url", "")
+                    if url_val.startswith("data:image"):
+                        try:
+                            input_image_b64 = url_val.split(",", 1)[1]
+                            break
+                        except: pass
+        
+        # 尝试从 top-level image 提取 (Seedream/SD 兼容格式)
+        if not input_image_b64 and request.image:
+            # request.image 是 list[str]
+            for img_str in request.image:
+                if img_str.startswith("data:image"):
+                    try:
+                        input_image_b64 = img_str.split(",", 1)[1]
+                        break
+                    except: pass
+                # 暂不支持 http url 转 base64 (需异步下载)，假设前端已传 base64
+        
+        if not input_image_b64:
+             return _fallback_response("qwen_edit_no_image", user_text="请提供一张图片以进行编辑。")
+
+        # 2. 准备参数
+        prompt = request.prompt or "Edit this image"
+        steps = request.num_inference_steps or 30
+        guidance = request.guidance_scale or 7.5
+        
+        # 3. 轮询调用
+        qwen_urls = [url.strip() for url in QWEN_EDIT_API_URLS if url.strip()]
+        last_error = None
+        start_time = time.time()
+        
+        for idx, qwen_url in enumerate(qwen_urls):
+            try:
+                logger.info(f"[IMG QWEN] Attempting URL {idx+1}/{len(qwen_urls)}: {qwen_url}")
+                
+                payload = {
+                    "image_base64": input_image_b64,
+                    "prompt": prompt,
+                    "steps": steps,
+                    "guidance_scale": guidance
+                }
+                
+                async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0), http2=True, follow_redirects=True) as client:
+                    resp = await client.post(
+                        qwen_url,
+                        json=payload,
+                        headers={"x-api-key": QWEN_EDIT_API_SECRET}
+                    )
+                
+                if resp.status_code != 200:
+                    err_text = resp.text[:500]
+                    logger.warning(f"[IMG QWEN] URL {idx+1} failed {resp.status_code}: {err_text}")
+                    last_error = f"HTTP {resp.status_code}: {err_text}"
+                    continue
+                
+                resp_json = resp.json()
+                if resp_json.get("status") != "success":
+                    logger.warning(f"[IMG QWEN] URL {idx+1} status not success: {resp_json}")
+                    last_error = f"API Error: {resp_json.get('detail') or 'Unknown error'}"
+                    continue
+                    
+                result_b64 = resp_json.get("image_base64")
+                if not result_b64:
+                    last_error = "Empty image_base64 in response"
+                    continue
+                    
+                # 成功
+                elapsed_ms = int((time.time() - start_time) * 1000)
+                data_uri = f"data:image/png;base64,{result_b64}"
+                
+                normalized = ImageGenerationResponse(
+                    images=[ImageUrl(url=data_uri)],
+                    text=prompt,
+                    timings={"inference": elapsed_ms},
+                    seed=random.randint(1, 2**31 - 1)
+                )
+                
+                # 保存历史
+                try:
+                    persist_key = getattr(request, "conversation_id", None) or "unknown"
+                    if persist_key:
+                        images_payload = [{"url": data_uri}]
+                        timings_dict = _safe_dump_timings(normalized.timings)
+                        meta_payload = {"text": normalized.text, "seed": normalized.seed, "timings": timings_dict}
+                        save_images(persist_key, images_payload, meta_payload)
+                except Exception as hist_err:
+                    logger.warning(f"[IMG QWEN] Failed to save history: {hist_err}")
+                    
+                return normalized
+
+            except Exception as e:
+                logger.warning(f"[IMG QWEN] URL {idx+1} exception: {e}")
+                last_error = str(e)
+                continue
+                
+        return _fallback_response(f"qwen_all_failed: {last_error}", user_text=f"图像编辑服务暂时不可用: {last_error}")
+
     if is_modal_z_image:
         logger.info(f"[IMG MODAL] Detected Modal Z-Image-Turbo model, using dedicated branch")
         
