@@ -498,10 +498,9 @@ async def _proxy_and_normalize(request: ImageGenerationRequest, request_obj: Opt
         width = max(256, min(width, 2048))
         height = max(256, min(height, 2048))
         
-        # 推理步数 (强制限制为 4 以节省算力，忽略前端传入的更大值)
-        # 用户反馈算力消耗过快，因此在此处做硬性限制
+        # 推理步数 (移除硬性限制，允许前端透传)
         req_steps = request.num_inference_steps or 4
-        steps = min(req_steps, 4)
+        steps = req_steps
         steps = max(1, steps)
         
         prompt = request.prompt or ""
