@@ -21,11 +21,15 @@ services:
       - GEMINI_ENABLE_GCS_UPLOAD=${GEMINI_ENABLE_GCS_UPLOAD:-false}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
       - GCS_PROJECT_ID=${GCS_PROJECT_ID}
+      # 图片历史数据目录（与 image_store.py 保持一致）
+      - IMAGE_HISTORY_DIR=/app/data/image_history
     env_file:
       - .env
     volumes:
-      - ./temp_uploads:/tmp/temp_document_uploads
-      - ./data:/app/data
+      # 使用命名卷持久化数据，比绑定挂载更可靠
+      # 数据存储在 Docker 管理的卷中，不会因容器重建而丢失
+      - eztalk_data:/app/data
+      - temp_uploads:/tmp/temp_document_uploads
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
@@ -35,5 +39,8 @@ services:
       start_period: 40s
 
 volumes:
+  # 命名卷：由 Docker 管理，数据持久化
+  eztalk_data:
+    driver: local
   temp_uploads:
     driver: local

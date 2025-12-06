@@ -19,8 +19,15 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # 复制应用代码
 COPY . .
 
+# 复制并设置 entrypoint 脚本执行权限
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# 创建数据目录（确保镜像层中存在，卷挂载时不会被覆盖）
+RUN mkdir -p /app/data/image_history
+
 # 暴露端口
 EXPOSE 7860
 
-# 运行应用 (使用 python -m uvicorn 更健壮)
-CMD ["python", "-m", "uvicorn", "eztalk_proxy.main:app", "--host", "0.0.0.0", "--port", "7860"]
+# 使用 entrypoint 脚本启动应用
+ENTRYPOINT ["/app/entrypoint.sh"]
