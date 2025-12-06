@@ -79,10 +79,7 @@ def process_chat(user_text: str, chat_history: list, system_prompt: str, api_key
     try:
         chat_response = client.models.generate_content(
             model=model,
-            contents=full_prompt,
-            config=types.GenerateContentConfig(
-                max_output_tokens=150
-            )
+            contents=full_prompt
         )
         
         assistant_text = chat_response.text.strip() if chat_response.text else ""
@@ -114,10 +111,7 @@ def process_chat_stream(user_text: str, chat_history: list, system_prompt: str, 
     try:
         chat_response = client.models.generate_content_stream(
             model=model,
-            contents=full_prompt,
-            config=types.GenerateContentConfig(
-                max_output_tokens=150
-            )
+            contents=full_prompt
         )
         
         for chunk in chat_response:
@@ -135,15 +129,10 @@ def process_tts(text: str, api_key: str, voice_name: str, model: str, api_url: s
     client = get_client(api_key, api_url)
     logger.info(f"Text-to-Speech using Gemini {model} (Voice: {voice_name})")
     
-    # 如果回复太长，截断避免TTS超时（保留前200字符）
-    text_for_tts = text[:200] if len(text) > 200 else text
-    if len(text) > 200:
-        logger.warning(f"AI response too long ({len(text)} chars), truncated to 200 for TTS")
-    
     try:
         tts_response = client.models.generate_content(
             model=model,
-            contents=text_for_tts,
+            contents=text,
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],
                 speech_config=types.SpeechConfig(

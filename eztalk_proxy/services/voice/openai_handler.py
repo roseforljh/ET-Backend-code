@@ -82,8 +82,7 @@ async def process_chat(
     
     chat_payload = {
         "model": model,
-        "messages": messages,
-        "max_tokens": 150
+        "messages": messages
     }
     
     # 使用全局客户端
@@ -142,7 +141,6 @@ async def process_chat_stream(
     chat_payload = {
         "model": model,
         "messages": messages,
-        "max_tokens": 150,
         "stream": True
     }
     
