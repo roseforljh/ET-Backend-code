@@ -181,10 +181,18 @@ class AliyunRealtimeSTT:
         self._final_text = ""
     
     async def start(self) -> bool:
-        """启动流式识别"""
+        """启动流式识别
+        
+        优化：
+        - 减少连接超时时间（10s -> 5s），快速失败
+        - 添加连接开始时间日志，便于诊断延迟
+        """
         if self.state != STTState.IDLE:
             logger.warning(f"无法启动 STT，当前状态: {self.state}")
             return False
+        
+        import time
+        start_time = time.time()
         
         self.state = STTState.STARTING
         self._loop = asyncio.get_event_loop()
@@ -213,10 +221,14 @@ class AliyunRealtimeSTT:
             
             self.recognition = Recognition(**recognition_params)
             
+            logger.info(f"Aliyun STT: 创建识别对象耗时 {(time.time() - start_time)*1000:.0f}ms")
+            
             # 启动流式识别（在后台线程中执行，因为 SDK 可能是阻塞的）
             def start_recognition():
                 try:
+                    thread_start = time.time()
                     self.recognition.start()
+                    logger.info(f"Aliyun STT: SDK start() 耗时 {(time.time() - thread_start)*1000:.0f}ms")
                 except Exception as e:
                     logger.error(f"启动识别失败: {e}")
                     asyncio.run_coroutine_threadsafe(
@@ -227,17 +239,20 @@ class AliyunRealtimeSTT:
             thread = threading.Thread(target=start_recognition, daemon=True)
             thread.start()
             
-            # 等待连接建立
+            # 等待连接建立（优化：减少超时时间，5秒足够）
             try:
-                result = await asyncio.wait_for(self.result_queue.get(), timeout=10.0)
+                result = await asyncio.wait_for(self.result_queue.get(), timeout=5.0)
                 if result.get("type") == "open":
                     self.state = STTState.STREAMING
-                    logger.info("Aliyun STT 流式识别已启动")
+                    elapsed = (time.time() - start_time) * 1000
+                    logger.info(f"Aliyun STT 流式识别已启动，总耗时 {elapsed:.0f}ms")
                     return True
                 elif result.get("type") == "error":
                     raise Exception(result.get("message", "Unknown error"))
             except asyncio.TimeoutError:
-                raise Exception("连接超时")
+                elapsed = (time.time() - start_time) * 1000
+                logger.error(f"Aliyun STT 连接超时 (5s)，已耗时 {elapsed:.0f}ms")
+                raise Exception("连接超时，请检查网络或稍后重试")
             
         except Exception as e:
             self.state = STTState.ERROR
