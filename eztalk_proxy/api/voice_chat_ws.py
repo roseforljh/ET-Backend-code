@@ -64,6 +64,31 @@ ALIYUN_TTS_CONFIG = {
     "enable_warmup": True,       # 启用预热
 }
 
+# Minimax TTS 特殊配置
+# Minimax API 有隐式的 QPS 限制，高并发会导致返回空音频（无错误码）
+# 需要控制并发数和分割长度，避免触发限流
+MINIMAX_TTS_CONFIG = {
+    "max_concurrent": 2,       # 降低并发数避免触发限流
+    "max_retry": 3,            # 增加重试次数
+    "task_timeout": 30.0,
+    "first_task_timeout": 15.0,
+    "enable_warmup": True,
+}
+
+# Minimax 专用分割器配置
+# 串行处理模式：使用大分段减少请求数，避免触发 API 限流
+# 策略与阿里云类似：首句快速触发 + 后续大分段
+MINIMAX_SPLITTER_CONFIG = {
+    "min_length": 50,          # 后续片段最小长度（减少请求数）
+    "preferred_length": 100,   # 理想长度
+    "max_length": 180,         # 最大长度
+    "absolute_max": 250,       # 绝对最大长度
+    # 首句快速触发配置（保持激进，减少首字延迟）
+    "first_segment_min_length": 2,
+    "first_segment_max_wait": 15,
+    "enable_immediate_triggers": True,
+}
+
 # 默认分割器配置（适用于高并发 TTS 平台）
 # 优化首字延迟：首句快速触发 + 常规分割
 DEFAULT_SPLITTER_CONFIG = {
@@ -296,24 +321,34 @@ class RealtimeVoiceChatSession:
             final_system_prompt = voice_prompt
         
         # 根据平台选择不同的处理流程
-        if tts_platform == "Aliyun":
-            # 阿里云使用流式处理器：边生成边发送
+        # Aliyun 和 Minimax 使用流式处理器：串行处理，避免触发 API 限流
+        # 其他平台使用预测性处理器：并行处理 + 按顺序输出
+        if tts_platform in ("Aliyun", "Minimax"):
             await self._run_chat_and_tts_streaming(user_text, final_system_prompt, start_time)
         else:
-            # 其他平台使用预测性处理器：并行处理 + 按顺序输出
             await self._run_chat_and_tts_predictive(user_text, final_system_prompt, start_time, tts_platform)
     
     async def _run_chat_and_tts_streaming(self, user_text: str, system_prompt: str, start_time: float):
         """
-        阿里云专用：流式 TTS 处理（边生成边发送）
+        流式 TTS 处理（边生成边发送）
+        
+        适用于有 QPS 限制的平台：Aliyun、Minimax
         
         优化策略：
         - 使用 StreamingTTSProcessor 串行处理任务
         - 每个音频块生成后立即发送给客户端
         - 避免等待整个任务完成
+        - 串行处理避免触发 API 限流
         """
-        tts_config_to_use = ALIYUN_TTS_CONFIG
-        splitter_config = ALIYUN_SPLITTER_CONFIG
+        tts_platform = self.tts_config.get("platform", "Gemini")
+        
+        # 根据平台选择配置
+        if tts_platform == "Minimax":
+            tts_config_to_use = MINIMAX_TTS_CONFIG
+            splitter_config = MINIMAX_SPLITTER_CONFIG
+        else:  # Aliyun
+            tts_config_to_use = ALIYUN_TTS_CONFIG
+            splitter_config = ALIYUN_SPLITTER_CONFIG
         
         self.splitter = SmartSentenceSplitter(
             min_length=splitter_config["min_length"],
@@ -325,7 +360,7 @@ class RealtimeVoiceChatSession:
             enable_immediate_triggers=splitter_config["enable_immediate_triggers"],
         )
         
-        logger.info(f"[TTS Config] 阿里云流式模式: timeout={tts_config_to_use['task_timeout']}, "
+        logger.info(f"[TTS Config] 流式模式 ({tts_platform}): timeout={tts_config_to_use['task_timeout']}, "
                    f"first_min={splitter_config['first_segment_min_length']}, "
                    f"preferred={splitter_config['preferred_length']}")
         
@@ -441,10 +476,18 @@ class RealtimeVoiceChatSession:
         """
         默认：预测性 TTS 处理（并行处理 + 按顺序输出）
         
-        适用于 Gemini、Minimax、SiliconFlow、OpenAI 等高并发平台
+        适用于 Gemini、Minimax、SiliconFlow、OpenAI 等平台
+        针对不同平台使用不同配置：
+        - Minimax: 降低并发数 + 增大分割长度，避免触发隐式限流
+        - 其他平台: 使用默认高并发配置
         """
-        tts_config_to_use = PREDICTIVE_TTS_CONFIG
-        splitter_config = DEFAULT_SPLITTER_CONFIG
+        # 根据 TTS 平台选择配置
+        if tts_platform == "Minimax":
+            tts_config_to_use = MINIMAX_TTS_CONFIG
+            splitter_config = MINIMAX_SPLITTER_CONFIG
+        else:
+            tts_config_to_use = PREDICTIVE_TTS_CONFIG
+            splitter_config = DEFAULT_SPLITTER_CONFIG
         
         self.splitter = SmartSentenceSplitter(
             min_length=splitter_config["min_length"],

@@ -107,6 +107,9 @@ async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qing
     """
     调用 Minimax T2A 接口进行流式语音合成
     Yields: pcm_bytes (chunk)
+    
+    注意：Minimax API 有隐式的 QPS 限制，高并发时会返回空音频而非错误码。
+    调用方应控制并发数（建议 max_concurrent=2）和分割长度，避免触发限流。
     """
     final_api_key = api_key or os.getenv("MINIMAX_T2A_API_KEY")
     
@@ -125,7 +128,9 @@ async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qing
         "Content-Type": "application/json"
     }
     
-    logger.info(f"Minimax Stream T2A Request URL: {url}, Voice: {voice_id}")
+    # 增强日志：记录输入文本信息，便于调试空响应问题
+    text_preview = text[:50] + '...' if len(text) > 50 else text
+    logger.info(f"Minimax Stream T2A: url={url}, voice={voice_id}, text_len={len(text)}, text='{text_preview}'")
     
     # 流式模式必须使用 PCM 格式
     # 原因：MP3 需要完整帧才能解码，不适合流式实时播放
@@ -199,6 +204,11 @@ async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qing
                             
                     except Exception as e:
                         logger.warning(f"Failed to parse SSE line: {line[:50]}... Error: {e}")
+            
+            # 增强日志：检测空响应，可能是触发了 API 限流
+            if chunk_count == 0:
+                logger.warning(f"Minimax returned empty audio (possible rate limit). "
+                              f"Text: '{text_preview}', text_len={len(text)}")
                             
     except Exception as e:
         logger.exception(f"Minimax Stream T2A exception: {e}")
