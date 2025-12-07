@@ -62,6 +62,10 @@ async def process_stt(audio_bytes: bytes, api_key: str, api_url: str, model: str
 async def process_tts(text: str, api_key: str, api_url: str, model: str, voice: str, response_format: str = "pcm", sample_rate: int = 32000) -> tuple[bytes, int]:
     """
     调用硅基流动 (SiliconFlow) 的 TTS 接口进行语音合成
+    
+    Args:
+        response_format: 音频格式，支持 pcm, opus, mp3, wav。默认 pcm（Opus 存在解码兼容性问题）
+        sample_rate: 采样率。默认 32000（PCM 格式，更高音质）
     """
     if not api_key:
         raise HTTPException(status_code=400, detail="SiliconFlow API Key 未提供")
@@ -80,12 +84,16 @@ async def process_tts(text: str, api_key: str, api_url: str, model: str, voice: 
     if model and voice and ":" not in voice:
         final_voice = f"{model}:{voice}"
     
+    # 使用配置的音频格式和采样率
+    final_response_format = response_format
+    final_sample_rate = sample_rate
+    
     payload = {
         "model": model,
         "input": text,
         "voice": final_voice,
-        "response_format": response_format,
-        "sample_rate": sample_rate,
+        "response_format": final_response_format,
+        "sample_rate": final_sample_rate,
         "stream": False,
         "gain": 0
     }
@@ -106,7 +114,7 @@ async def process_tts(text: str, api_key: str, api_url: str, model: str, voice: 
             logger.error(f"SiliconFlow TTS failed: {resp.status_code} - {error_msg}")
             raise Exception(f"API Error ({resp.status_code}): {error_msg}")
             
-        return resp.content, sample_rate
+        return resp.content, final_sample_rate
         
     except Exception as e:
         logger.exception("SiliconFlow TTS error")
@@ -115,6 +123,11 @@ async def process_tts(text: str, api_key: str, api_url: str, model: str, voice: 
 async def process_tts_stream(text: str, api_key: str, api_url: str, model: str, voice: str, response_format: str = "pcm", sample_rate: int = 32000):
     """
     调用硅基流动 (SiliconFlow) 的 TTS 接口进行流式语音合成
+    
+    Args:
+        response_format: 音频格式，支持 pcm, opus, mp3, wav。默认 pcm（避免 Opus 解码兼容性问题）
+        sample_rate: 采样率。默认 32000（PCM 格式，参考官方文档）
+        
     Yields: bytes (chunk)
     """
     if not api_key:
@@ -134,24 +147,45 @@ async def process_tts_stream(text: str, api_key: str, api_url: str, model: str, 
     if model and voice and ":" not in voice:
         final_voice = f"{model}:{voice}"
     
+    # 使用配置的音频格式和采样率
+    final_response_format = response_format
+    final_sample_rate = sample_rate
+    
+    # IndexTTS-2 模型特殊处理：该模型在 32kHz 下可能产生爆音，降低到 24kHz
+    if model and "IndexTTS-2" in model:
+        final_sample_rate = 24000
+        logger.info(f"IndexTTS-2 detected, using sample_rate=24000 to avoid audio artifacts")
+    
+    # IndexTTS-2 模型可能不支持流式输出，禁用 stream
+    enable_stream = True
+    if model and "IndexTTS-2" in model:
+        enable_stream = False
+        logger.info(f"IndexTTS-2 detected, disabling stream mode due to API limitations")
+    
     payload = {
         "model": model,
         "input": text,
         "voice": final_voice,
-        "response_format": response_format,
-        "sample_rate": sample_rate,
-        "stream": True, # 开启流式
-        "gain": 0
+        "response_format": final_response_format,
+        "sample_rate": final_sample_rate,
+        "stream": enable_stream
     }
     
-    logger.info(f"Starting SiliconFlow Stream TTS: {model} ({final_voice})")
+    # gain 参数可能不被所有模型支持，仅在需要时添加
+    # if "gain" in tts_config:
+    #     payload["gain"] = tts_config["gain"]
+    
+    logger.info(f"Starting SiliconFlow Stream TTS: {model} ({final_voice}), format={final_response_format}, sample_rate={final_sample_rate}")
     
     try:
         # 使用全局客户端进行流式请求
         client = get_http_client()
         async with client.stream("POST", api_url, headers=headers, json=payload, timeout=60.0) as response:
             if response.status_code != 200:
+                error_body = await response.aread()
                 logger.error(f"SiliconFlow Stream TTS failed: {response.status_code}")
+                logger.error(f"Error details: {error_body.decode('utf-8', errors='ignore')}")
+                logger.error(f"Request payload: {payload}")
                 return
 
             chunk_count = 0

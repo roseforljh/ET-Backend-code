@@ -15,7 +15,6 @@ from .core.config import (
 from .api import chat as chat_router
 from .api import image_generation as image_generation_router
 from .api import seedream as seedream_router
-from .api import gemini_live as gemini_live_router
 from .api import voice_chat as voice_chat_router
 from .api import admin as admin_router
 from .middleware import SignatureVerificationMiddleware
@@ -164,10 +163,6 @@ logger.info("图像生成路由已加载到路径 /images/generations")
 # Doubao Seedream 4.0 image generation proxy
 app.include_router(seedream_router.router)
 logger.info("Doubao Seedream 路由已加载到路径 /doubao/v3/images/generations")
-
-# Gemini Live audio relay (server-to-server)
-app.include_router(gemini_live_router.router)
-logger.info("Gemini Live 路由已加载到路径 /gemini/live/*")
 
 # Voice Chat (STT + Chat + TTS)
 app.include_router(voice_chat_router.router, prefix="/voice-chat")

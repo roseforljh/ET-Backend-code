@@ -1,12 +1,34 @@
 import logging
 import base64
+import asyncio
 import orjson
-import re
 from typing import AsyncGenerator, Dict, Any
 from .voice import google_handler, openai_handler, minimax_handler, siliconflow_handler
+from .voice.validator import validate_voice_config
+from .smart_splitter import SmartSentenceSplitter
+from .predictive_tts import PredictiveTTSManager
 from ..utils.helpers import strip_markdown_for_tts
 
 logger = logging.getLogger("EzTalkProxy.Services.VoiceStreaming")
+
+# 预测性 TTS 配置
+PREDICTIVE_TTS_CONFIG = {
+    "max_concurrent": 5,       # 最大并发 TTS 请求
+    "max_retry": 2,            # 最大重试次数
+    "task_timeout": 30.0,      # 单任务超时（秒）
+}
+
+# 音频格式配置
+# 不同 TTS 平台的音频格式
+# 注意：SiliconFlow 的 Opus 格式与 Android MediaCodec 解码器存在兼容性问题
+# 临时使用 PCM 格式以确保稳定性
+AUDIO_FORMAT_CONFIG = {
+    "Gemini": {"format": "pcm", "sample_rate": 24000},        # Gemini SDK 仅返回 PCM
+    "Minimax": {"format": "pcm", "sample_rate": 24000},       # 流式需要 PCM（MP3 需完整帧）
+    "SiliconFlow": {"format": "pcm", "sample_rate": 32000},   # PCM 格式，32kHz（避免 Opus 解码问题）
+    "OpenAI": {"format": "opus", "sample_rate": 24000},       # ✅ Opus 压缩
+}
+
 
 class VoiceStreamProcessor:
     def __init__(
@@ -14,20 +36,32 @@ class VoiceStreamProcessor:
         stt_config: Dict[str, Any],
         chat_config: Dict[str, Any],
         tts_config: Dict[str, Any],
+        use_predictive_tts: bool = True,  # 是否使用预测性 TTS
     ):
         self.stt_config = stt_config
         self.chat_config = chat_config
         self.tts_config = tts_config
+        self.use_predictive_tts = use_predictive_tts
         self.sentence_buffer = ""
         self.full_assistant_text = ""
         
-        # Sentence splitters: ., ?, !, 。, ？, ！, and newlines
-        self.sentence_endings = re.compile(r'[.?!。？！\n]+')
+        # 使用智能分割器替代简单的正则匹配
+        # 配置：最小8字符，理想20字符，最大50字符，绝对最大80字符
+        self.splitter = SmartSentenceSplitter(
+            min_length=8,
+            preferred_length=20,
+            max_length=50,
+            absolute_max=80
+        )
 
     async def process(self, audio_bytes: bytes, mime_type: str) -> AsyncGenerator[bytes, None]:
         """
         Execute the full STT -> Chat Stream -> TTS Stream pipeline.
         Yields NDJSON bytes.
+        
+        支持两种模式：
+        1. 预测性 TTS（默认）：LLM 和 TTS 并行执行，减少延迟
+        2. Stop-and-Go：传统模式，每个片段等待 TTS 完成后继续
         """
         # 1. STT
         user_text = await self._run_stt(audio_bytes, mime_type)
@@ -35,39 +69,138 @@ class VoiceStreamProcessor:
             yield self._format_event("error", {"message": "STT failed or empty result"})
             return
 
-        # Yield initial meta event with user text
+        # 获取音频格式配置
+        tts_platform = self.tts_config.get("platform", "Gemini")
+        audio_config = AUDIO_FORMAT_CONFIG.get(tts_platform, AUDIO_FORMAT_CONFIG["Gemini"])
+        
+        # Yield initial meta event with user text and audio format
         yield self._format_event("meta", {
             "user_text": user_text,
-            "assistant_text": ""
+            "assistant_text": "",
+            "audio_format": audio_config["format"],
+            "sample_rate": audio_config["sample_rate"]
         })
 
-        # 2. Chat Stream
+        # 根据配置选择处理模式
+        if self.use_predictive_tts:
+            async for event in self._process_with_predictive_tts(user_text):
+                yield event
+        else:
+            async for event in self._process_with_stop_and_go(user_text):
+                yield event
+
+    async def _process_with_predictive_tts(self, user_text: str) -> AsyncGenerator[bytes, None]:
+        """
+        预测性 TTS 处理流程
+        
+        LLM 输出和 TTS 合成并行执行，显著减少响应延迟。
+        """
+        # 创建预测性 TTS 管理器和处理器
+        tts_manager = PredictiveTTSManager(self.tts_config)
+        tts_processor = tts_manager.create_processor(
+            max_concurrent=PREDICTIVE_TTS_CONFIG["max_concurrent"],
+            max_retry=PREDICTIVE_TTS_CONFIG["max_retry"],
+            task_timeout=PREDICTIVE_TTS_CONFIG["task_timeout"]
+        )
+        
+        sequence_id = 0
+        
+        # 用于存储需要输出的事件
+        meta_events = []
+        
+        try:
+            # 2. Chat Stream + 提交 TTS 任务
+            async for token in self._run_chat_stream(user_text):
+                self.sentence_buffer += token
+                self.full_assistant_text += token
+
+                # 使用智能分割器分割文本
+                result = self.splitter.split(self.sentence_buffer)
+                
+                # 处理每个可发送的片段
+                for segment in result.segments:
+                    if not segment.strip():
+                        continue
+                    
+                    # 发送 meta 更新
+                    yield self._format_event("meta", {
+                        "user_text": user_text,
+                        "assistant_text": self.full_assistant_text
+                    })
+                    
+                    # 提交 TTS 任务（非阻塞）
+                    clean_segment = strip_markdown_for_tts(segment)
+                    await tts_processor.submit_task(sequence_id, clean_segment)
+                    sequence_id += 1
+                
+                # 更新 buffer 为剩余内容
+                self.sentence_buffer = result.remainder
+
+            # 处理剩余 buffer
+            if self.sentence_buffer.strip():
+                yield self._format_event("meta", {
+                    "user_text": user_text,
+                    "assistant_text": self.full_assistant_text
+                })
+                clean_segment = strip_markdown_for_tts(self.sentence_buffer)
+                await tts_processor.submit_task(sequence_id, clean_segment)
+                sequence_id += 1
+            
+            # 标记输入完成
+            tts_processor.mark_input_complete()
+            
+            # 3. 按顺序输出音频
+            async for audio_chunk in tts_processor.yield_audio_in_order():
+                if audio_chunk:
+                    yield self._format_event("audio", {
+                        "data": base64.b64encode(audio_chunk).decode('utf-8')
+                    })
+                    
+        except Exception as e:
+            logger.exception("Predictive TTS pipeline error")
+            yield self._format_event("error", {"message": str(e)})
+        finally:
+            # 清理资源
+            await tts_processor.cleanup()
+
+    async def _process_with_stop_and_go(self, user_text: str) -> AsyncGenerator[bytes, None]:
+        """
+        传统 Stop-and-Go 处理流程
+        
+        每个片段等待 TTS 完成后再处理下一个。
+        """
         try:
             async for token in self._run_chat_stream(user_text):
                 self.sentence_buffer += token
                 self.full_assistant_text += token
 
-                # Check for sentence completion
-                if self._is_sentence_complete(self.sentence_buffer):
-                    # Process the complete sentence(s)
-                    sentences = self._extract_sentences()
-                    for sentence in sentences:
-                        if not sentence.strip():
-                            continue
-                            
-                        # Yield updated text（meta 中保留原始文本，便于展示/调试）
-                        yield self._format_event("meta", {
-                            "user_text": user_text,
-                            "assistant_text": self.full_assistant_text
-                        })
+                # 使用智能分割器分割文本
+                result = self.splitter.split(self.sentence_buffer)
+                
+                # 处理每个可发送的片段
+                for segment in result.segments:
+                    if not segment.strip():
+                        continue
                         
-                        # 3. TTS Stream (Stop-and-Go: Await TTS for this sentence)
-                        clean_sentence = strip_markdown_for_tts(sentence)
-                        async for audio_chunk in self._run_tts_stream(clean_sentence):
+                    # Yield updated text
+                    yield self._format_event("meta", {
+                        "user_text": user_text,
+                        "assistant_text": self.full_assistant_text
+                    })
+                    
+                    # TTS Stream (Stop-and-Go)
+                    clean_segment = strip_markdown_for_tts(segment)
+                    try:
+                        async for audio_chunk in self._run_tts_stream(clean_segment):
                             if audio_chunk:
                                 yield self._format_event("audio", {
                                     "data": base64.b64encode(audio_chunk).decode('utf-8')
                                 })
+                    except Exception as tts_error:
+                        yield self._format_event("error", {"message": f"TTS Error: {str(tts_error)}"})
+                
+                # 更新 buffer 为剩余内容
+                self.sentence_buffer = result.remainder
 
             # Flush remaining buffer
             if self.sentence_buffer.strip():
@@ -75,12 +208,15 @@ class VoiceStreamProcessor:
                     "user_text": user_text,
                     "assistant_text": self.full_assistant_text
                 })
-                clean_sentence = strip_markdown_for_tts(self.sentence_buffer)
-                async for audio_chunk in self._run_tts_stream(clean_sentence):
-                    if audio_chunk:
-                        yield self._format_event("audio", {
-                            "data": base64.b64encode(audio_chunk).decode('utf-8')
-                        })
+                clean_segment = strip_markdown_for_tts(self.sentence_buffer)
+                try:
+                    async for audio_chunk in self._run_tts_stream(clean_segment):
+                        if audio_chunk:
+                            yield self._format_event("audio", {
+                                "data": base64.b64encode(audio_chunk).decode('utf-8')
+                            })
+                except Exception as tts_error:
+                    yield self._format_event("error", {"message": f"TTS Error: {str(tts_error)}"})
 
         except Exception as e:
             logger.exception("Streaming pipeline error")
@@ -148,6 +284,9 @@ class VoiceStreamProcessor:
         platform = self.tts_config.get("platform", "Gemini")
         voice_name = self.tts_config.get("voice_name", "Kore")
         
+        # 使用统一校验器
+        validate_voice_config(platform, voice_name)
+
         try:
             if platform == "Minimax":
                 async for chunk in minimax_handler.synthesize_minimax_t2a_stream(
@@ -158,12 +297,16 @@ class VoiceStreamProcessor:
                 ):
                     yield chunk
             elif platform == "SiliconFlow":
+                # 使用配置的音频格式
+                audio_config = AUDIO_FORMAT_CONFIG.get("SiliconFlow", AUDIO_FORMAT_CONFIG["Gemini"])
                 async for chunk in siliconflow_handler.process_tts_stream(
                     text=text,
                     api_key=self.tts_config["api_key"],
                     api_url=self.tts_config["api_url"],
                     model=self.tts_config["model"],
-                    voice=voice_name
+                    voice=voice_name,
+                    response_format=audio_config["format"],
+                    sample_rate=audio_config["sample_rate"]
                 ):
                     yield chunk
             elif platform == "OpenAI":
@@ -175,8 +318,8 @@ class VoiceStreamProcessor:
                     model=self.tts_config["model"],
                     api_url=self.tts_config.get("api_url")
                 )
-                # Strip WAV header if possible, or just send as is (Client handles it)
-                # For simplicity, we send the whole blob as one chunk
+                if not wav_data:
+                     raise ValueError("OpenAI TTS returned empty data")
                 yield wav_data
             else: # Gemini
                 pcm_data = google_handler.process_tts(
@@ -186,37 +329,13 @@ class VoiceStreamProcessor:
                     model=self.tts_config["model"],
                     api_url=self.tts_config.get("api_url")
                 )
+                if not pcm_data:
+                     raise ValueError("Gemini TTS returned empty data")
                 yield pcm_data
         except Exception as e:
             logger.error(f"TTS stream failed for chunk '{text[:20]}...': {e}")
-
-    def _is_sentence_complete(self, text: str) -> bool:
-        # Simple check for sentence ending punctuation
-        return bool(self.sentence_endings.search(text))
-
-    def _extract_sentences(self) -> list[str]:
-        """
-        Split buffer into sentences, keeping the remaining incomplete part in buffer.
-        """
-        # Find all sentence splits
-        parts = self.sentence_endings.split(self.sentence_buffer)
-        matches = self.sentence_endings.findall(self.sentence_buffer)
-        
-        sentences = []
-        new_buffer = ""
-        
-        # Reconstruct sentences with their punctuation
-        for i in range(len(parts)):
-            part = parts[i]
-            if i < len(matches):
-                punctuation = matches[i]
-                sentences.append(part + punctuation)
-            else:
-                # The last part is the incomplete buffer
-                new_buffer = part
-        
-        self.sentence_buffer = new_buffer
-        return sentences
+            # 重新抛出异常，以便上层捕获并发送 error 事件给前端
+            raise e
 
     def _format_event(self, event_type: str, data: Dict[str, Any]) -> bytes:
         payload = {"type": event_type, **data}

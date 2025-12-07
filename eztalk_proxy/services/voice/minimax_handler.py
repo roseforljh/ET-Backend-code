@@ -36,8 +36,7 @@ async def synthesize_minimax_t2a(text: str, voice_id: str = "male-qn-qingse", ap
         return None, 24000
         
     url = api_url.strip() # 去除首尾空格
-    
-    logger.info(f"Minimax T2A Request URL: {url}")
+    logger.info(f"Minimax T2A Request URL: {url}, Voice: {voice_id}")
     
     headers = {
         "Authorization": f"Bearer {final_api_key}",
@@ -45,6 +44,8 @@ async def synthesize_minimax_t2a(text: str, voice_id: str = "male-qn-qingse", ap
     }
     
     # 默认参数 (参考 Minimax 官方文档)
+    # 支持格式：pcm, mp3, flac
+    # 非流式模式可以使用 mp3 获得更好压缩
     payload = {
         "model": "speech-2.6-hd",
         "text": text,
@@ -59,7 +60,7 @@ async def synthesize_minimax_t2a(text: str, voice_id: str = "male-qn-qingse", ap
         "audio_setting": {
             "sample_rate": 24000, # 支持 32000, 24000 等
             "bitrate": 128000,
-            "format": "pcm", # 使用 pcm 方便后续转 wav
+            "format": "pcm",      # 非流式用 PCM，方便转 WAV
             "channel": 1
         },
         "subtitle_enable": False
@@ -124,8 +125,10 @@ async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qing
         "Content-Type": "application/json"
     }
     
-    logger.info(f"Minimax Stream T2A Request URL: {url}")
+    logger.info(f"Minimax Stream T2A Request URL: {url}, Voice: {voice_id}")
     
+    # 流式模式必须使用 PCM 格式
+    # 原因：MP3 需要完整帧才能解码，不适合流式实时播放
     payload = {
         "model": "speech-2.6-hd",
         "text": text,
@@ -143,7 +146,7 @@ async def synthesize_minimax_t2a_stream(text: str, voice_id: str = "male-qn-qing
         "audio_setting": {
             "sample_rate": 24000,
             "bitrate": 128000,
-            "format": "pcm",
+            "format": "pcm",    # 流式必须用 PCM
             "channel": 1
         },
         "subtitle_enable": False

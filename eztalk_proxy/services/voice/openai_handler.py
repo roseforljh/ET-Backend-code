@@ -179,10 +179,14 @@ async def process_tts(
     api_key: str,
     voice_name: str = "alloy",
     model: str = "tts-1",
-    api_url: str = None
+    api_url: str = None,
+    response_format: str = "opus"  # 默认使用 Opus 格式，压缩率高
 ) -> bytes:
     """
     OpenAI Text-to-Speech
+    
+    Args:
+        response_format: 音频格式，支持 mp3, opus, aac, flac, wav, pcm。默认 opus（压缩率高，延迟低）
     """
     if not api_key:
         raise HTTPException(status_code=400, detail="OpenAI API Key 未提供")
@@ -190,7 +194,7 @@ async def process_tts(
     if not api_url:
         raise HTTPException(status_code=400, detail="OpenAI API 地址未提供")
         
-    logger.info(f"Text-to-Speech using OpenAI {model} ({voice_name}) at {api_url}")
+    logger.info(f"Text-to-Speech using OpenAI {model} ({voice_name}) format={response_format} at {api_url}")
     
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -201,7 +205,7 @@ async def process_tts(
         "model": model,
         "input": text,
         "voice": voice_name,
-        "response_format": "wav"  # Explicitly request WAV
+        "response_format": response_format  # 使用 Opus 格式
     }
     
     client = get_http_client()
