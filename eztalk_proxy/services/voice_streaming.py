@@ -1,6 +1,7 @@
 import logging
 import base64
 import asyncio
+import time
 import orjson
 from typing import AsyncGenerator, Dict, Any
 from .voice import google_handler, openai_handler, minimax_handler, siliconflow_handler, aliyun_handler
@@ -223,17 +224,20 @@ class VoiceStreamProcessor:
             yield self._format_event("error", {"message": str(e)})
 
     async def _run_stt(self, audio_bytes: bytes, mime_type: str) -> str:
+        """执行 STT 识别，添加延迟日志"""
         platform = self.stt_config.get("platform", "Google")
+        start_time = time.time()
+        
         try:
             if platform == "OpenAI":
-                return await openai_handler.process_stt(
+                result = await openai_handler.process_stt(
                     audio_bytes=audio_bytes,
                     api_key=self.stt_config["api_key"],
                     api_url=self.stt_config.get("api_url"),
                     model=self.stt_config["model"]
                 )
             elif platform == "SiliconFlow":
-                return await siliconflow_handler.process_stt(
+                result = await siliconflow_handler.process_stt(
                     audio_bytes=audio_bytes,
                     api_key=self.stt_config["api_key"],
                     api_url=self.stt_config["api_url"],
@@ -242,7 +246,7 @@ class VoiceStreamProcessor:
                 )
             elif platform == "Aliyun":
                 fmt = "opus" if "opus" in mime_type or "ogg" in mime_type else "wav"
-                return await aliyun_handler.process_stt(
+                result = await aliyun_handler.process_stt(
                     audio_bytes=audio_bytes,
                     api_key=self.stt_config["api_key"],
                     api_url=self.stt_config.get("api_url"),
@@ -251,15 +255,21 @@ class VoiceStreamProcessor:
                     sample_rate=16000
                 )
             else: # Google
-                return google_handler.process_stt(
+                result = google_handler.process_stt(
                     audio_bytes=audio_bytes,
                     mime_type=mime_type,
                     api_key=self.stt_config["api_key"],
                     model=self.stt_config["model"],
                     api_url=self.stt_config.get("api_url")
                 )
+            
+            elapsed = (time.time() - start_time) * 1000
+            logger.info(f"[Latency] STT ({platform}) 总耗时: {elapsed:.0f}ms, 音频大小: {len(audio_bytes)}bytes")
+            return result
+            
         except Exception as e:
-            logger.error(f"STT failed: {e}")
+            elapsed = (time.time() - start_time) * 1000
+            logger.error(f"STT ({platform}) failed after {elapsed:.0f}ms: {e}")
             return ""
 
     async def _run_chat_stream(self, user_text: str):
