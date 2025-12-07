@@ -3,7 +3,7 @@ import base64
 import asyncio
 import orjson
 from typing import AsyncGenerator, Dict, Any
-from .voice import google_handler, openai_handler, minimax_handler, siliconflow_handler
+from .voice import google_handler, openai_handler, minimax_handler, siliconflow_handler, aliyun_handler
 from .voice.validator import validate_voice_config
 from .smart_splitter import SmartSentenceSplitter
 from .predictive_tts import PredictiveTTSManager
@@ -239,6 +239,16 @@ class VoiceStreamProcessor:
                     api_url=self.stt_config["api_url"],
                     model=self.stt_config["model"],
                     mime_type=mime_type
+                )
+            elif platform == "Aliyun":
+                fmt = "opus" if "opus" in mime_type or "ogg" in mime_type else "wav"
+                return await aliyun_handler.process_stt(
+                    audio_bytes=audio_bytes,
+                    api_key=self.stt_config["api_key"],
+                    api_url=self.stt_config.get("api_url"),
+                    model=self.stt_config["model"],
+                    format=fmt,
+                    sample_rate=16000
                 )
             else: # Google
                 return google_handler.process_stt(

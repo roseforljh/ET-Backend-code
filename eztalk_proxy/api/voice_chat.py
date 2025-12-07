@@ -8,7 +8,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 
 # 导入新的处理器
-from ..services.voice import google_handler, openai_handler, minimax_handler, siliconflow_handler
+from ..services.voice import google_handler, openai_handler, minimax_handler, siliconflow_handler, aliyun_handler
 from ..services.voice_streaming import VoiceStreamProcessor
 from ..utils.helpers import strip_markdown_for_tts
 from eztalk_proxy.services.requests.prompts import compose_voice_system_prompt
@@ -191,6 +191,19 @@ async def complete_voice_chat(
                 model=final_stt_model,
                 mime_type=audio.content_type or "audio/wav"
             )
+        elif final_stt_platform == "Aliyun":
+            # 根据上传文件的MIME类型判断格式
+            mime = audio.content_type or ""
+            fmt = "opus" if "opus" in mime or "ogg" in mime else "wav"
+            
+            user_text = await aliyun_handler.process_stt(
+                audio_bytes=audio_bytes,
+                api_key=final_stt_key,
+                api_url=final_stt_url,
+                model=final_stt_model,
+                format=fmt,
+                sample_rate=16000
+            )
         else: # Google
             user_text = google_handler.process_stt(
                 audio_bytes=audio_bytes,
@@ -369,6 +382,15 @@ async def speech_to_text(
         if not api_url:
             raise HTTPException(400, "SiliconFlow STT 需要提供 api_url")
         text = await siliconflow_handler.process_stt(audio_bytes, api_key, api_url, model, mime)
+    elif platform == "Aliyun":
+        text = await aliyun_handler.process_stt(
+            audio_bytes=audio_bytes,
+            api_key=api_key,
+            api_url=api_url,
+            model=model,
+            format="opus",
+            sample_rate=16000
+        )
     else:
         # 默认 Google
         text = google_handler.process_stt(audio_bytes, mime, api_key, model, api_url)
