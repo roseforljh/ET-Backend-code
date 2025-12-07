@@ -8,12 +8,18 @@
 4. Chat 输出流式发送给 TTS
 5. TTS 音频实时返回客户端
 
+优化特性：
+- 首句快速触发：减少首字语音延迟
+- TTS 预热：预建立连接减少冷启动延迟
+- 平台特定优化：针对不同 TTS 平台的最佳配置
+
 协议说明见架构文档
 """
 
 import logging
 import base64
 import asyncio
+import time
 import orjson
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -38,11 +44,13 @@ AUDIO_FORMAT_CONFIG = {
     "Aliyun": {"format": "pcm", "sample_rate": 24000},
 }
 
-# 预测性 TTS 配置（默认）
+# 预测性 TTS 配置（默认 - 高并发平台如 Gemini, Minimax, SiliconFlow, OpenAI）
 PREDICTIVE_TTS_CONFIG = {
     "max_concurrent": 5,
     "max_retry": 2,
     "task_timeout": 30.0,
+    "first_task_timeout": 15.0,  # 首句使用更短超时
+    "enable_warmup": True,        # 启用预热
 }
 
 # 阿里云 TTS 特殊配置
@@ -52,16 +60,41 @@ ALIYUN_TTS_CONFIG = {
     "max_concurrent": 2,  # 降低并发数以避免触发 429 限速
     "max_retry": 3,       # 增加重试次数
     "task_timeout": 60.0, # 增加超时时间
+    "first_task_timeout": 30.0,  # 阿里云首句超时时间稍长
+    "enable_warmup": True,       # 启用预热
+}
+
+# 默认分割器配置（适用于高并发 TTS 平台）
+# 优化首字延迟：首句快速触发 + 常规分割
+DEFAULT_SPLITTER_CONFIG = {
+    "min_length": 8,
+    "preferred_length": 20,
+    "max_length": 50,
+    "absolute_max": 80,
+    # 首句快速触发配置
+    "first_segment_min_length": 2,   # 首句最小 2 字符
+    "first_segment_max_wait": 15,    # 首句最大等待 15 字符
+    "enable_immediate_triggers": True,
 }
 
 # 阿里云 TTS 的分割器配置
-# 使用更大的分割粒度减少请求次数，加快整体处理速度
-# 阿里云 TTS 串行处理（max_concurrent=2），分段越少总时间越短
+# 核心策略：首句极速触发 + 后续大分段
+#
+# 阿里云 TTS 特点：
+# 1. 每个请求需要 1-3 秒处理时间
+# 2. 有 QPS 限制，并发数受限
+# 3. 分段越少，总时间越短
+#
+# 因此：首句必须极快触发（2字符即可），后续用大分段减少请求数
 ALIYUN_SPLITTER_CONFIG = {
-    "min_length": 120,       # 最小长度 120 字符（避免过短分段）
-    "preferred_length": 200, # 理想长度 200 字符
-    "max_length": 350,       # 最大长度 350 字符
-    "absolute_max": 500,     # 绝对最大长度 500 字符
+    "min_length": 60,        # 后续片段最小长度（减少请求数）
+    "preferred_length": 120, # 理想长度
+    "max_length": 200,       # 最大长度
+    "absolute_max": 300,     # 绝对最大长度
+    # 首句极速触发配置（阿里云首句延迟是关键瓶颈）
+    "first_segment_min_length": 1,   # 首句最小 1 字符（极速触发）
+    "first_segment_max_wait": 5,     # 首句最大等待 5 字符（超级激进，强制快速出声）
+    "enable_immediate_triggers": True,
 }
 
 
@@ -228,21 +261,30 @@ class RealtimeVoiceChatSession:
         """
         运行 Chat 和 TTS 流程
         
+        优化特性：
+        - 首句快速触发：使用更激进的分割策略
+        - TTS 预热：预建立连接减少冷启动
+        - 平台特定优化：针对不同平台使用最佳配置
+        - 阿里云流式输出：边生成边发送，避免等待任务完成
+        
         Args:
             user_text: 用户输入文本（STT 结果）
         """
         if not user_text or self.is_cancelled:
             return
         
+        start_time = time.time()
+        
         # 获取音频格式配置
         tts_platform = self.tts_config.get("platform", "Gemini")
         audio_config = AUDIO_FORMAT_CONFIG.get(tts_platform, AUDIO_FORMAT_CONFIG["Gemini"])
         
-        # 发送音频格式信息
+        # 发送音频格式信息（新增 tts_platform 字段，供客户端调整预缓冲策略）
         await self.send_json({
             "type": "meta",
             "audio_format": audio_config["format"],
-            "sample_rate": audio_config["sample_rate"]
+            "sample_rate": audio_config["sample_rate"],
+            "tts_platform": tts_platform  # 新增：告知客户端 TTS 平台
         })
         
         # 构建系统提示
@@ -253,44 +295,199 @@ class RealtimeVoiceChatSession:
         else:
             final_system_prompt = voice_prompt
         
-        # 创建 TTS 管理器
+        # 根据平台选择不同的处理流程
+        if tts_platform == "Aliyun":
+            # 阿里云使用流式处理器：边生成边发送
+            await self._run_chat_and_tts_streaming(user_text, final_system_prompt, start_time)
+        else:
+            # 其他平台使用预测性处理器：并行处理 + 按顺序输出
+            await self._run_chat_and_tts_predictive(user_text, final_system_prompt, start_time, tts_platform)
+    
+    async def _run_chat_and_tts_streaming(self, user_text: str, system_prompt: str, start_time: float):
+        """
+        阿里云专用：流式 TTS 处理（边生成边发送）
+        
+        优化策略：
+        - 使用 StreamingTTSProcessor 串行处理任务
+        - 每个音频块生成后立即发送给客户端
+        - 避免等待整个任务完成
+        """
+        tts_config_to_use = ALIYUN_TTS_CONFIG
+        splitter_config = ALIYUN_SPLITTER_CONFIG
+        
+        self.splitter = SmartSentenceSplitter(
+            min_length=splitter_config["min_length"],
+            preferred_length=splitter_config["preferred_length"],
+            max_length=splitter_config["max_length"],
+            absolute_max=splitter_config["absolute_max"],
+            first_segment_min_length=splitter_config["first_segment_min_length"],
+            first_segment_max_wait=splitter_config["first_segment_max_wait"],
+            enable_immediate_triggers=splitter_config["enable_immediate_triggers"],
+        )
+        
+        logger.info(f"[TTS Config] 阿里云流式模式: timeout={tts_config_to_use['task_timeout']}, "
+                   f"first_min={splitter_config['first_segment_min_length']}, "
+                   f"preferred={splitter_config['preferred_length']}")
+        
+        # 创建 TTS 管理器和流式处理器
         tts_manager = PredictiveTTSManager(self.tts_config)
         
-        # 根据 TTS 平台选择配置
-        if tts_platform == "Aliyun":
-            tts_config_to_use = ALIYUN_TTS_CONFIG
-            # 阿里云使用更大的分割粒度，减少 WebSocket 连接次数
-            self.splitter = SmartSentenceSplitter(
-                min_length=ALIYUN_SPLITTER_CONFIG["min_length"],
-                preferred_length=ALIYUN_SPLITTER_CONFIG["preferred_length"],
-                max_length=ALIYUN_SPLITTER_CONFIG["max_length"],
-                absolute_max=ALIYUN_SPLITTER_CONFIG["absolute_max"]
-            )
-            logger.info(f"使用阿里云 TTS 专用配置: max_concurrent={ALIYUN_TTS_CONFIG['max_concurrent']}, "
-                       f"preferred_length={ALIYUN_SPLITTER_CONFIG['preferred_length']}")
-        else:
-            tts_config_to_use = PREDICTIVE_TTS_CONFIG
-            # 其他平台使用默认的分割粒度
-            self.splitter = SmartSentenceSplitter(
-                min_length=8,
-                preferred_length=20,
-                max_length=50,
-                absolute_max=80
-            )
+        # 音频块发送回调
+        first_audio_sent = False
+        async def on_audio_chunk(chunk: bytes):
+            nonlocal first_audio_sent
+            if self.is_cancelled:
+                return
+            
+            # 记录首音频发送时间
+            if not first_audio_sent:
+                first_audio_sent = True
+                elapsed = (time.time() - start_time) * 1000
+                logger.info(f"[Latency] 首音频发送延迟: {elapsed:.0f}ms")
+            
+            await self.send_json({
+                "type": "audio",
+                "data": base64.b64encode(chunk).decode('utf-8')
+            })
         
-        tts_processor = tts_manager.create_processor(
-            max_concurrent=tts_config_to_use["max_concurrent"],
+        streaming_processor = tts_manager.create_streaming_processor(
+            on_audio_chunk=on_audio_chunk,
             max_retry=tts_config_to_use["max_retry"],
-            task_timeout=tts_config_to_use["task_timeout"]
+            task_timeout=tts_config_to_use["task_timeout"],
         )
         
         sentence_buffer = ""
         full_text = ""
         sequence_id = 0
+        first_segment_submitted = False
+        
+        try:
+            # 启动流式处理器
+            await streaming_processor.start()
+            
+            # 流式 Chat
+            chat_start_time = time.time()
+            first_token_received = False
+            
+            async for token in self._run_chat_stream(user_text, system_prompt):
+                if not first_token_received:
+                    first_token_received = True
+                    llm_latency = (time.time() - chat_start_time) * 1000
+                    logger.info(f"[Latency] LLM 首字延迟: {llm_latency:.0f}ms")
+                
+                if self.is_cancelled:
+                    break
+                
+                sentence_buffer += token
+                full_text += token
+                
+                # 发送增量文本
+                await self.send_json({
+                    "type": "chat_delta",
+                    "text": token,
+                    "full_text": full_text
+                })
+                
+                # 使用智能分割器
+                result = self.splitter.split(sentence_buffer)
+                
+                for segment in result.segments:
+                    if not segment.strip():
+                        continue
+                    
+                    # 提交 TTS 任务（流式处理器会边生成边发送）
+                    clean_segment = strip_markdown_for_tts(segment)
+                    await streaming_processor.submit_task(sequence_id, clean_segment)
+                    
+                    # 记录首句提交时间
+                    if not first_segment_submitted:
+                        first_segment_submitted = True
+                        elapsed = (time.time() - start_time) * 1000
+                        logger.info(f"[Latency] 首句提交延迟: {elapsed:.0f}ms, 文本: '{clean_segment[:30]}...'")
+                    
+                    sequence_id += 1
+                
+                sentence_buffer = result.remainder
+            
+            # 处理剩余 buffer
+            if sentence_buffer.strip() and not self.is_cancelled:
+                clean_segment = strip_markdown_for_tts(sentence_buffer)
+                await streaming_processor.submit_task(sequence_id, clean_segment)
+                sequence_id += 1
+            
+            # 标记输入完成并等待所有任务处理完毕
+            streaming_processor.mark_input_complete()
+            await streaming_processor.wait_complete()
+            
+            # 仅在未取消时发送完成信号
+            if not self.is_cancelled:
+                total_elapsed = (time.time() - start_time) * 1000
+                logger.info(f"[Latency] 总处理时间: {total_elapsed:.0f}ms, 片段数: {sequence_id}")
+                await self.send_json({
+                    "type": "complete",
+                    "user_text": user_text,
+                    "assistant_text": full_text
+                })
+            
+        except Exception as e:
+            logger.exception("Chat/TTS 流式处理错误")
+            await self.send_error(f"处理失败: {str(e)}")
+        finally:
+            await streaming_processor.cleanup()
+            if self.splitter:
+                self.splitter.reset()
+    
+    async def _run_chat_and_tts_predictive(self, user_text: str, system_prompt: str, start_time: float, tts_platform: str):
+        """
+        默认：预测性 TTS 处理（并行处理 + 按顺序输出）
+        
+        适用于 Gemini、Minimax、SiliconFlow、OpenAI 等高并发平台
+        """
+        tts_config_to_use = PREDICTIVE_TTS_CONFIG
+        splitter_config = DEFAULT_SPLITTER_CONFIG
+        
+        self.splitter = SmartSentenceSplitter(
+            min_length=splitter_config["min_length"],
+            preferred_length=splitter_config["preferred_length"],
+            max_length=splitter_config["max_length"],
+            absolute_max=splitter_config["absolute_max"],
+            first_segment_min_length=splitter_config["first_segment_min_length"],
+            first_segment_max_wait=splitter_config["first_segment_max_wait"],
+            enable_immediate_triggers=splitter_config["enable_immediate_triggers"],
+        )
+        
+        logger.info(f"[TTS Config] 预测性模式 ({tts_platform}): max_concurrent={tts_config_to_use['max_concurrent']}, "
+                   f"first_min={splitter_config['first_segment_min_length']}")
+        
+        # 创建 TTS 管理器和预测性处理器
+        tts_manager = PredictiveTTSManager(self.tts_config)
+        tts_processor = tts_manager.create_processor(
+            max_concurrent=tts_config_to_use["max_concurrent"],
+            max_retry=tts_config_to_use["max_retry"],
+            task_timeout=tts_config_to_use["task_timeout"],
+            first_task_timeout=tts_config_to_use.get("first_task_timeout", 15.0),
+            enable_warmup=tts_config_to_use.get("enable_warmup", True),
+        )
+        
+        # 异步启动 TTS 预热（不阻塞后续流程）
+        await tts_processor.start_warmup_async()
+        
+        sentence_buffer = ""
+        full_text = ""
+        sequence_id = 0
+        first_segment_submitted = False
         
         try:
             # 流式 Chat
-            async for token in self._run_chat_stream(user_text, final_system_prompt):
+            chat_start_time = time.time()
+            first_token_received = False
+            
+            async for token in self._run_chat_stream(user_text, system_prompt):
+                if not first_token_received:
+                    first_token_received = True
+                    llm_latency = (time.time() - chat_start_time) * 1000
+                    logger.info(f"[Latency] LLM 首字延迟: {llm_latency:.0f}ms")
+                
                 if self.is_cancelled:
                     break
                 
@@ -314,6 +511,13 @@ class RealtimeVoiceChatSession:
                     # 提交 TTS 任务
                     clean_segment = strip_markdown_for_tts(segment)
                     await tts_processor.submit_task(sequence_id, clean_segment)
+                    
+                    # 记录首句提交时间
+                    if not first_segment_submitted:
+                        first_segment_submitted = True
+                        elapsed = (time.time() - start_time) * 1000
+                        logger.info(f"[Latency] 首句提交延迟: {elapsed:.0f}ms, 文本: '{clean_segment[:30]}...'")
+                    
                     sequence_id += 1
                 
                 sentence_buffer = result.remainder
@@ -328,11 +532,18 @@ class RealtimeVoiceChatSession:
             tts_processor.mark_input_complete()
             
             # 按顺序输出音频
+            first_audio_sent = False
             async for audio_chunk in tts_processor.yield_audio_in_order():
                 if self.is_cancelled:
                     logger.info("会话已取消，停止发送音频")
                     break
                 if audio_chunk:
+                    # 记录首音频发送时间
+                    if not first_audio_sent:
+                        first_audio_sent = True
+                        elapsed = (time.time() - start_time) * 1000
+                        logger.info(f"[Latency] 首音频发送延迟: {elapsed:.0f}ms")
+                    
                     success = await self.send_json({
                         "type": "audio",
                         "data": base64.b64encode(audio_chunk).decode('utf-8')
@@ -343,6 +554,8 @@ class RealtimeVoiceChatSession:
             
             # 仅在未取消时发送完成信号
             if not self.is_cancelled:
+                total_elapsed = (time.time() - start_time) * 1000
+                logger.info(f"[Latency] 总处理时间: {total_elapsed:.0f}ms, 片段数: {sequence_id}")
                 await self.send_json({
                     "type": "complete",
                     "user_text": user_text,
@@ -354,6 +567,8 @@ class RealtimeVoiceChatSession:
             await self.send_error(f"处理失败: {str(e)}")
         finally:
             await tts_processor.cleanup()
+            if self.splitter:
+                self.splitter.reset()
     
     async def _run_chat_stream(self, user_text: str, system_prompt: str):
         """运行流式 Chat"""

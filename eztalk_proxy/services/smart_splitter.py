@@ -4,18 +4,60 @@
 用于语音模式中的 LLM 输出分割，以提前触发 TTS，减少首次语音输出延迟。
 
 分割策略优先级：
-1. 强制分割点：句末标点（。！？.!?）、换行
-2. 推荐分割点：逗号、分号等 + 满足最小长度
-3. 紧急分割点：超过最大长度时强制在任意标点处分割
-4. 兜底分割：超过绝对最大长度时在空格/字符边界分割
+1. 首句快速触发：对第一个片段使用更激进的策略，遇到任意标点即分割
+2. 强制分割点：句末标点（。！？.!?）、换行
+3. 推荐分割点：逗号、分号等 + 满足最小长度
+4. 紧急分割点：超过最大长度时强制在任意标点处分割
+5. 兜底分割：超过绝对最大长度时在空格/字符边界分割
 """
 
 import re
 import logging
-from typing import List, Optional
+from typing import List, Optional, Set
 from dataclasses import dataclass
 
 logger = logging.getLogger("EzTalkProxy.Services.SmartSplitter")
+
+
+# 常见开场白，遇到即立即触发（无需等待更多文本）
+# 这些短语通常是 LLM 回复的开头，遇到后立即触发 TTS 可以显著减少首字延迟
+DEFAULT_IMMEDIATE_TRIGGERS = {
+    # 中文开场白 - 肯定回应
+    "好的，", "好的。", "好的!", "好，", "好!",
+    "嗯，", "嗯。", "嗯!", "嗯嗯，", "嗯嗯。",
+    "当然，", "当然。", "当然!", "当然可以，", "当然可以。", "当然可以!",
+    "是的，", "是的。", "是的!", "对的，", "对的。", "对!",
+    "可以，", "可以。", "可以!", "没问题，", "没问题。", "没问题!",
+    "好啊，", "好啊。", "好啊!", "行，", "行。", "行!",
+    "明白，", "明白。", "明白!", "了解，", "了解。", "了解!",
+    "收到，", "收到。", "收到!",
+    "好呀，", "好呀。", "好呀!",
+    "哦，", "哦。", "哦!", "噢，", "噢。",
+    "啊，", "啊。", "呀，", "呀。",
+    # 中文开场白 - 思考/过渡
+    "这个，", "这个。", "那个，", "那个。",
+    "其实，", "其实。", "实际上，", "实际上。",
+    "首先，", "首先。", "然后，", "然后。",
+    "关于这个问题，", "关于这个，",
+    "让我想想，", "让我看看，",
+    "我觉得，", "我认为，", "我想，",
+    # 中文开场白 - 打招呼
+    "你好，", "你好。", "你好!",
+    "哈喽，", "哈喽。", "嗨，", "嗨。",
+    "早上好，", "下午好，", "晚上好，",
+    # 英文开场白
+    "OK，", "OK。", "OK!", "Sure，", "Sure。", "Sure!",
+    "Yes，", "Yes。", "Yes!", "Okay，", "Okay。", "Okay!",
+    "Of course，", "Of course。", "Of course!",
+    "Certainly，", "Certainly。", "Certainly!",
+    "Absolutely，", "Absolutely。", "Absolutely!",
+    "Well，", "Well。", "So，", "So。",
+    "Actually，", "Actually。",
+    "I think，", "I think。",
+    "Let me，", "Let's，",
+    "Hello，", "Hello。", "Hello!",
+    "Hi，", "Hi。", "Hi!",
+}
 
 
 @dataclass
@@ -30,6 +72,7 @@ class SmartSentenceSplitter:
     智能句子分割器
     
     特点：
+    - 首句快速触发，减少首字延迟
     - 尽早触发 TTS，减少延迟
     - 保持语义完整性
     - 自然的语音节奏
@@ -41,7 +84,12 @@ class SmartSentenceSplitter:
         min_length: int = 8,
         preferred_length: int = 20,
         max_length: int = 50,
-        absolute_max: int = 80
+        absolute_max: int = 80,
+        # 首句快速触发配置
+        first_segment_min_length: int = 2,      # 首句最小长度（更激进）
+        first_segment_max_wait: int = 15,       # 首句最大等待长度
+        enable_immediate_triggers: bool = True,  # 启用立即触发模式
+        immediate_triggers: Set[str] = None,     # 自定义立即触发的开场白
     ):
         """
         初始化分割器
@@ -51,11 +99,24 @@ class SmartSentenceSplitter:
             preferred_length: 理想分割长度
             max_length: 最大等待长度（超过后在任意标点分割）
             absolute_max: 绝对最大长度（强制分割）
+            first_segment_min_length: 首句最小长度（更激进，加速首字输出）
+            first_segment_max_wait: 首句最大等待长度（超过后强制分割）
+            enable_immediate_triggers: 是否启用立即触发模式
+            immediate_triggers: 自定义立即触发的开场白集合
         """
         self.min_length = min_length
         self.preferred_length = preferred_length
         self.max_length = max_length
         self.absolute_max = absolute_max
+        
+        # 首句快速触发配置
+        self.first_segment_min_length = first_segment_min_length
+        self.first_segment_max_wait = first_segment_max_wait
+        self.enable_immediate_triggers = enable_immediate_triggers
+        self.immediate_triggers = immediate_triggers or DEFAULT_IMMEDIATE_TRIGGERS
+        
+        # 首句状态标记
+        self._first_segment_emitted = False
         
         # 分割点正则
         self.strong_endings = re.compile(r'[。！？.!?\n]')
@@ -82,7 +143,80 @@ class SmartSentenceSplitter:
             "如果", "那么", "否则",
         ]
         
-        logger.debug(f"SmartSentenceSplitter initialized: min={min_length}, preferred={preferred_length}, max={max_length}")
+        logger.debug(f"SmartSentenceSplitter initialized: min={min_length}, preferred={preferred_length}, "
+                    f"max={max_length}, first_min={first_segment_min_length}, first_max_wait={first_segment_max_wait}")
+    
+    def reset(self):
+        """重置分割器状态（新对话开始时调用）"""
+        self._first_segment_emitted = False
+        logger.debug("SmartSentenceSplitter reset")
+    
+    def _check_immediate_trigger(self, text: str) -> Optional[int]:
+        """
+        检查是否匹配立即触发的开场白
+        
+        Args:
+            text: 待检查的文本
+            
+        Returns:
+            匹配的分割点位置，未匹配返回 None
+        """
+        if not self.enable_immediate_triggers:
+            return None
+        
+        for trigger in self.immediate_triggers:
+            if text.startswith(trigger):
+                logger.info(f"[FirstSegment] 立即触发匹配: '{trigger}'")
+                return len(trigger)
+        
+        return None
+    
+    def _find_first_segment_split_point(self, text: str) -> Optional[int]:
+        """
+        为首句寻找快速分割点（更激进的策略）
+        
+        策略：
+        1. 检查立即触发的开场白
+        2. 在任意标点处分割（只要达到最小长度）
+        3. 超过最大等待长度时强制分割
+        
+        Returns:
+            int: 分割位置
+            None: 不分割，继续等待
+        """
+        length = len(text)
+        
+        # 1. 检查立即触发
+        trigger_pos = self._check_immediate_trigger(text)
+        if trigger_pos:
+            return trigger_pos
+        
+        # 2. 检查是否处于保护模式
+        if self._is_protected(text):
+            # 首句保护模式下，如果超过最大等待长度，忽略保护
+            if length < self.first_segment_max_wait:
+                return None
+        
+        # 3. 寻找任意标点分割点（首句使用更小的最小长度）
+        for m in self.any_punctuation.finditer(text):
+            pos = m.end()
+            if pos >= self.first_segment_min_length:
+                if not self._is_position_protected(text, m.start()):
+                    logger.info(f"[FirstSegment] 快速分割点: pos={pos}, char='{text[m.start()]}'")
+                    return pos
+        
+        # 4. 超过最大等待长度，强制分割
+        if length >= self.first_segment_max_wait:
+            # 尝试在空格处分割
+            space_pos = text.rfind(' ', self.first_segment_min_length, self.first_segment_max_wait)
+            if space_pos > 0:
+                logger.info(f"[FirstSegment] 强制分割（空格）: pos={space_pos + 1}")
+                return space_pos + 1
+            # 硬切
+            logger.info(f"[FirstSegment] 强制分割（硬切）: pos={self.first_segment_max_wait}")
+            return self.first_segment_max_wait
+        
+        return None
     
     def split(self, buffer: str) -> SplitResult:
         """
@@ -98,6 +232,22 @@ class SmartSentenceSplitter:
         remaining = buffer
         
         while remaining:
+            # 首句使用快速分割策略
+            if not self._first_segment_emitted:
+                split_point = self._find_first_segment_split_point(remaining)
+                if split_point and split_point > 0:
+                    segment = remaining[:split_point].strip()
+                    remaining = remaining[split_point:].lstrip()
+                    if segment:
+                        segments.append(segment)
+                        self._first_segment_emitted = True
+                        logger.info(f"[FirstSegment] ✓ 首句输出 ({len(segment)} chars): '{segment}'")
+                    continue
+                else:
+                    # 首句尚未准备好
+                    break
+            
+            # 后续片段使用常规策略
             split_point = self._find_best_split_point(remaining)
             
             if split_point is None:
