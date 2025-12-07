@@ -8,8 +8,9 @@ orjson>=3.8.0
 google-cloud-aiplatform>=1.45.0
 google-auth>=2.20.0
 google-api-python-client
-# Aliyun DashScope SDK for Fun-ASR
-dashscope>=1.23.1
+# Aliyun DashScope SDK for Fun-ASR and TTS
+# 版本要求: >=1.24.6 支持 MultiModalConversation TTS 接口
+dashscope>=1.24.6
 google-generativeai>=0.5.0
 
 pydantic>=2.0.0

@@ -35,13 +35,33 @@ AUDIO_FORMAT_CONFIG = {
     "Minimax": {"format": "pcm", "sample_rate": 24000},
     "SiliconFlow": {"format": "pcm", "sample_rate": 32000},
     "OpenAI": {"format": "opus", "sample_rate": 24000},
+    "Aliyun": {"format": "pcm", "sample_rate": 24000},
 }
 
-# 预测性 TTS 配置
+# 预测性 TTS 配置（默认）
 PREDICTIVE_TTS_CONFIG = {
     "max_concurrent": 5,
     "max_retry": 2,
     "task_timeout": 30.0,
+}
+
+# 阿里云 TTS 特殊配置
+# 阿里云 API 有请求频率限制（QPS），需要控制并发数
+# 免费额度 QPS 较低，需要更保守的设置
+ALIYUN_TTS_CONFIG = {
+    "max_concurrent": 2,  # 降低并发数以避免触发 429 限速
+    "max_retry": 3,       # 增加重试次数
+    "task_timeout": 60.0, # 增加超时时间
+}
+
+# 阿里云 TTS 的分割器配置
+# 使用更大的分割粒度减少请求次数，加快整体处理速度
+# 阿里云 TTS 串行处理（max_concurrent=2），分段越少总时间越短
+ALIYUN_SPLITTER_CONFIG = {
+    "min_length": 120,       # 最小长度 120 字符（避免过短分段）
+    "preferred_length": 200, # 理想长度 200 字符
+    "max_length": 350,       # 最大长度 350 字符
+    "absolute_max": 500,     # 绝对最大长度 500 字符
 }
 
 
@@ -59,19 +79,26 @@ class RealtimeVoiceChatSession:
         self.chat_config: Optional[Dict[str, Any]] = None
         self.tts_config: Optional[Dict[str, Any]] = None
         self.is_cancelled = False
-        self.splitter = SmartSentenceSplitter(
-            min_length=8,
-            preferred_length=20,
-            max_length=50,
-            absolute_max=80
-        )
+        # 分割器将在 run_chat_and_tts 中根据 TTS 平台动态创建
+        self.splitter: Optional[SmartSentenceSplitter] = None
     
-    async def send_json(self, data: Dict[str, Any]):
-        """发送 JSON 消息"""
+    async def send_json(self, data: Dict[str, Any]) -> bool:
+        """发送 JSON 消息
+        
+        Returns:
+            bool: 发送是否成功，失败时会自动设置 is_cancelled
+        """
+        if self.is_cancelled:
+            return False
         try:
             await self.websocket.send_bytes(orjson.dumps(data))
+            return True
         except Exception as e:
-            logger.warning(f"发送消息失败: {e}")
+            # 发送失败，标记会话已取消，停止后续处理
+            if not self.is_cancelled:
+                logger.warning(f"发送消息失败，停止后续处理: {e}")
+                self.is_cancelled = True
+            return False
     
     async def send_error(self, message: str):
         """发送错误消息"""
@@ -228,10 +255,33 @@ class RealtimeVoiceChatSession:
         
         # 创建 TTS 管理器
         tts_manager = PredictiveTTSManager(self.tts_config)
+        
+        # 根据 TTS 平台选择配置
+        if tts_platform == "Aliyun":
+            tts_config_to_use = ALIYUN_TTS_CONFIG
+            # 阿里云使用更大的分割粒度，减少 WebSocket 连接次数
+            self.splitter = SmartSentenceSplitter(
+                min_length=ALIYUN_SPLITTER_CONFIG["min_length"],
+                preferred_length=ALIYUN_SPLITTER_CONFIG["preferred_length"],
+                max_length=ALIYUN_SPLITTER_CONFIG["max_length"],
+                absolute_max=ALIYUN_SPLITTER_CONFIG["absolute_max"]
+            )
+            logger.info(f"使用阿里云 TTS 专用配置: max_concurrent={ALIYUN_TTS_CONFIG['max_concurrent']}, "
+                       f"preferred_length={ALIYUN_SPLITTER_CONFIG['preferred_length']}")
+        else:
+            tts_config_to_use = PREDICTIVE_TTS_CONFIG
+            # 其他平台使用默认的分割粒度
+            self.splitter = SmartSentenceSplitter(
+                min_length=8,
+                preferred_length=20,
+                max_length=50,
+                absolute_max=80
+            )
+        
         tts_processor = tts_manager.create_processor(
-            max_concurrent=PREDICTIVE_TTS_CONFIG["max_concurrent"],
-            max_retry=PREDICTIVE_TTS_CONFIG["max_retry"],
-            task_timeout=PREDICTIVE_TTS_CONFIG["task_timeout"]
+            max_concurrent=tts_config_to_use["max_concurrent"],
+            max_retry=tts_config_to_use["max_retry"],
+            task_timeout=tts_config_to_use["task_timeout"]
         )
         
         sentence_buffer = ""
@@ -280,19 +330,24 @@ class RealtimeVoiceChatSession:
             # 按顺序输出音频
             async for audio_chunk in tts_processor.yield_audio_in_order():
                 if self.is_cancelled:
+                    logger.info("会话已取消，停止发送音频")
                     break
                 if audio_chunk:
-                    await self.send_json({
+                    success = await self.send_json({
                         "type": "audio",
                         "data": base64.b64encode(audio_chunk).decode('utf-8')
                     })
+                    if not success:
+                        logger.info("WebSocket 连接已断开，停止发送音频")
+                        break
             
-            # 发送完成信号
-            await self.send_json({
-                "type": "complete",
-                "user_text": user_text,
-                "assistant_text": full_text
-            })
+            # 仅在未取消时发送完成信号
+            if not self.is_cancelled:
+                await self.send_json({
+                    "type": "complete",
+                    "user_text": user_text,
+                    "assistant_text": full_text
+                })
             
         except Exception as e:
             logger.exception("Chat/TTS 流程错误")

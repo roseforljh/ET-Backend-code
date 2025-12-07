@@ -109,7 +109,8 @@ class PredictiveTTSProcessor:
         self.tasks[sequence_id] = task
         self.total_tasks = max(self.total_tasks, sequence_id + 1)
         
-        logger.debug(f"Submitted TTS task {sequence_id}: '{text[:30]}...'")
+        # 记录详细的任务信息
+        logger.info(f"[TTS Task {sequence_id}] 提交任务: '{text[:50]}{'...' if len(text) > 50 else ''}'")
         
         # 启动处理协程
         async_task = asyncio.create_task(self._process_task_with_retry(task))
@@ -127,31 +128,47 @@ class PredictiveTTSProcessor:
             
             for attempt in range(self.max_retry + 1):
                 try:
-                    logger.debug(f"Processing TTS task {task.sequence_id}, attempt {attempt + 1}")
+                    logger.info(f"[TTS Task {task.sequence_id}] 开始处理 (尝试 {attempt + 1}/{self.max_retry + 1})")
                     await self._execute_tts(task)
                     task.status = TaskStatus.COMPLETED
-                    logger.debug(f"TTS task {task.sequence_id} completed, chunks: {len(task.audio_chunks)}")
+                    
+                    # 计算音频数据总大小
+                    total_bytes = sum(len(chunk) for chunk in task.audio_chunks)
+                    logger.info(f"[TTS Task {task.sequence_id}] ✓ 完成: {len(task.audio_chunks)} 块, {total_bytes} 字节")
                     break
                     
                 except asyncio.TimeoutError:
                     task.error = "Timeout"
-                    logger.warning(f"TTS task {task.sequence_id} timeout, attempt {attempt + 1}/{self.max_retry + 1}")
+                    logger.warning(f"[TTS Task {task.sequence_id}] ⚠ 超时 (尝试 {attempt + 1}/{self.max_retry + 1})")
                     if attempt < self.max_retry:
                         task.retry_count += 1
                         await asyncio.sleep(0.5)  # 短暂等待后重试
                     else:
                         task.status = TaskStatus.FAILED
-                        logger.error(f"TTS task {task.sequence_id} failed after {self.max_retry + 1} attempts: timeout")
+                        logger.error(f"[TTS Task {task.sequence_id}] ✗ 失败: 重试 {self.max_retry + 1} 次后仍超时")
                         
                 except Exception as e:
                     task.error = str(e)
-                    logger.warning(f"TTS task {task.sequence_id} error: {e}, attempt {attempt + 1}/{self.max_retry + 1}")
+                    error_str = str(e).lower()
+                    
+                    # 检查是否是限速错误 (429)
+                    is_rate_limit = "429" in error_str or "rate limit" in error_str or "too many" in error_str
+                    
+                    logger.warning(f"[TTS Task {task.sequence_id}] ⚠ 错误: {e} (尝试 {attempt + 1}/{self.max_retry + 1})")
+                    
                     if attempt < self.max_retry:
                         task.retry_count += 1
-                        await asyncio.sleep(0.5)
+                        
+                        # 如果是限速错误，使用指数退避
+                        if is_rate_limit:
+                            backoff_time = (2 ** attempt) * 1.0  # 1s, 2s, 4s...
+                            logger.info(f"[TTS Task {task.sequence_id}] 检测到限速，等待 {backoff_time:.1f}s 后重试")
+                            await asyncio.sleep(backoff_time)
+                        else:
+                            await asyncio.sleep(0.5)
                     else:
                         task.status = TaskStatus.FAILED
-                        logger.error(f"TTS task {task.sequence_id} failed after {self.max_retry + 1} attempts: {e}")
+                        logger.error(f"[TTS Task {task.sequence_id}] ✗ 失败: {e}")
             
             # 标记完成（无论成功或失败）
             task.completed_event.set()
@@ -197,11 +214,14 @@ class PredictiveTTSProcessor:
                 
                 # 输出音频
                 if task.status == TaskStatus.COMPLETED and task.audio_chunks:
+                    total_bytes = sum(len(chunk) for chunk in task.audio_chunks)
                     for chunk in task.audio_chunks:
                         yield chunk
-                    logger.debug(f"Output audio for task {self.next_output_id}, chunks: {len(task.audio_chunks)}")
+                    logger.info(f"[TTS Output {self.next_output_id}] 输出音频: {len(task.audio_chunks)} 块, {total_bytes} 字节")
                 elif task.status == TaskStatus.FAILED:
-                    logger.warning(f"Task {self.next_output_id} failed, skipping audio output")
+                    logger.error(f"[TTS Output {self.next_output_id}] ✗ 跳过失败任务: {task.error}")
+                elif not task.audio_chunks:
+                    logger.warning(f"[TTS Output {self.next_output_id}] ⚠ 任务完成但无音频数据")
                 
                 # 清理已输出的任务
                 del self.tasks[self.next_output_id]
@@ -255,12 +275,14 @@ class PredictiveTTSManager:
         
         # 延迟导入，避免循环依赖
         from .voice import google_handler, openai_handler, minimax_handler, siliconflow_handler
+        from .voice import aliyun_tts_handler
         from .voice.validator import validate_voice_config
         
         self.google_handler = google_handler
         self.openai_handler = openai_handler
         self.minimax_handler = minimax_handler
         self.siliconflow_handler = siliconflow_handler
+        self.aliyun_tts_handler = aliyun_tts_handler
         self.validate_voice_config = validate_voice_config
     
     async def execute_tts(self, text: str) -> AsyncGenerator[bytes, None]:
@@ -316,6 +338,18 @@ class PredictiveTTSManager:
                     yield wav_data
                 else:
                     raise ValueError("OpenAI TTS returned empty data")
+                    
+            elif platform == "Aliyun":
+                # 阿里云 Qwen-TTS HTTP API 流式合成（更稳定）
+                async for chunk in self.aliyun_tts_handler.process_tts_stream(
+                    text=text,
+                    api_key=self.tts_config["api_key"],
+                    api_url=self.tts_config.get("api_url"),
+                    model=self.tts_config.get("model", "qwen3-tts-flash"),
+                    voice=voice_name,
+                    sample_rate=24000
+                ):
+                    yield chunk
                     
             else:  # Gemini
                 pcm_data = self.google_handler.process_tts(
