@@ -16,8 +16,8 @@ from .core.config import (
 from .api import chat as chat_router
 from .api import image_generation as image_generation_router
 from .api import seedream as seedream_router
-from .api import voice_chat as voice_chat_router
-from .api import voice_chat_ws as voice_chat_ws_router
+# from .api import voice_chat as voice_chat_router
+# from .api import voice_chat_ws as voice_chat_ws_router
 from .api import admin as admin_router
 from .middleware import SignatureVerificationMiddleware
 from .middleware.access_logging import AccessLogMiddleware
@@ -174,13 +174,13 @@ logger.info("图像生成路由已加载到路径 /images/generations")
 app.include_router(seedream_router.router)
 logger.info("Doubao Seedream 路由已加载到路径 /doubao/v3/images/generations")
 
-# Voice Chat (STT + Chat + TTS)
-app.include_router(voice_chat_router.router, prefix="/voice-chat")
-logger.info("Voice Chat 路由已加载到路径 /voice-chat/*")
+# Voice Chat (STT + Chat + TTS) - 已废弃，客户端改为直连
+# app.include_router(voice_chat_router.router, prefix="/voice-chat")
+# logger.info("Voice Chat 路由已加载到路径 /voice-chat/*")
 
-# Voice Chat WebSocket (实时流式对话)
-app.include_router(voice_chat_ws_router.router, prefix="/voice-chat")
-logger.info("Voice Chat WebSocket 路由已加载到路径 /voice-chat/realtime")
+# Voice Chat WebSocket (实时流式对话) - 已废弃，客户端改为直连
+# app.include_router(voice_chat_ws_router.router, prefix="/voice-chat")
+# logger.info("Voice Chat WebSocket 路由已加载到路径 /voice-chat/realtime")
 
 # Admin Router
 app.include_router(admin_router.router, prefix="/everytalk/api", tags=["Admin"])
