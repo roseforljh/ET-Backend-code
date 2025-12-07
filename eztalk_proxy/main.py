@@ -4,6 +4,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -65,7 +66,11 @@ async def lifespan(app_instance: FastAPI):
     try:
         client_local = httpx.AsyncClient(
             timeout=httpx.Timeout(API_TIMEOUT, read=READ_TIMEOUT),
-            limits=httpx.Limits(max_connections=MAX_CONNECTIONS),
+            limits=httpx.Limits(
+                max_connections=MAX_CONNECTIONS,
+                max_keepalive_connections=50,  # 保持活跃的连接数，减少重新建立连接的开销
+                keepalive_expiry=120.0         # 连接保持活跃时间（秒），适合跨境高延迟场景
+            ),
             http2=True,
             follow_redirects=True,
             trust_env=True
@@ -151,6 +156,10 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"]
 )
+
+# GZip 压缩中间件：减少 JSON 响应传输量，优化跨境延迟
+# minimum_size=500: 只压缩大于 500 字节的响应
+app.add_middleware(GZipMiddleware, minimum_size=500)
 logger.info(f"FastAPI EzTalk Proxy v{APP_VERSION} 初始化完成，已配置CORS。")
 
 # ===== 注册路由（必须在所有中间件之后）=====
